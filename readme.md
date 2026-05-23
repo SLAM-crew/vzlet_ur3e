@@ -5,13 +5,16 @@
 Complete [Prepare robot and network connection](https://docs.universal-robots.com/Universal_Robots_ROS2_Documentation/doc/ur_robot_driver/ur_robot_driver/doc/installation/robot_setup.html#prepare-robot-and-network-connection): Robot setup and Network setup.
 
 How to launch?
+
 First - ros2driver
 ```
 ros2 launch ur_robot_driver ur_control.launch.py ur_type:=ur3e robot_ip:=192.168.31.59 kinematics_params_file:=config/ur3e_calibration.yaml
 ```
+
 Second - Teacher Pendant --> press `play` button
 
-Third -ros2 control switch_controllers --activate scaled_joint_trajectory_controller
+Third - do `ros2 control switch_controllers --activate scaled_joint_trajectory_controller`
+
 TODO: add third to custom launch file
 
 
