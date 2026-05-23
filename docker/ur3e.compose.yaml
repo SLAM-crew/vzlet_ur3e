@@ -1,0 +1,23 @@
+services:
+  ur3e:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile-main
+    image: crew_docker-ur3e:latest
+    container_name: ur3e
+    privileged: true
+    network_mode: host
+    command: >
+      bash -lc "source /root/workspace/install/setup.bash &&
+      ros2 launch ur_robot_driver ur_control.launch.py
+      ur_type:=ur3e
+      robot_ip:=${ROBOT_IP:-192.168.31.59}
+      launch_rviz:=false
+      headless_mode:=true"
+    environment:
+      RMW_IMPLEMENTATION: rmw_zenoh_cpp
+      ZENOH_SESSION_CONFIG_URI: /root/config/DEFAULT_RMW_ZENOH_SESSION_CONFIG.json5
+    volumes:
+      - ../ws:/root/workspace
+      - ../config:/root/config:ro
+      - /dev:/dev

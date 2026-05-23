@@ -1,0 +1,26 @@
+services:
+  rviz:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile-main
+    image: crew_docker-ur3e:latest
+    container_name: rviz_ur3e
+    network_mode: host
+    command: >
+      bash -lc "source /root/workspace/install/setup.bash &&
+      ros2 launch ur_moveit_config ur_moveit.launch.py
+      ur_type:=ur3e
+      launch_rviz:=true
+      launch_servo:=false"
+    environment:
+      RMW_IMPLEMENTATION: rmw_zenoh_cpp
+      ZENOH_SESSION_CONFIG_URI: /root/config/RVIZ_RMW_ZENOH_SESSION_CONFIG.json5
+      DISPLAY: ${DISPLAY}
+      QT_X11_NO_MITSHM: "1"
+    volumes:
+      - /tmp/.X11-unix:/tmp/.X11-unix:rw
+      - ../ws:/root/workspace:ro
+      - ../config:/root/config:ro
+
+    
+    
