@@ -1,0 +1,33 @@
+fix_start_state: true
+
+planning_plugins:
+  - ompl_interface/OMPLPlanner
+request_adapters:
+  - default_planning_request_adapters/ResolveConstraintFrames
+  - default_planning_request_adapters/ValidateWorkspaceBounds
+  - default_planning_request_adapters/CheckStartStateBounds
+  - default_planning_request_adapters/CheckStartStateCollision
+response_adapters:
+  - default_planning_response_adapters/AddTimeOptimalParameterization
+  - default_planning_response_adapters/AddRuckigTrajectorySmoothing
+  - default_planning_response_adapters/ValidateSolution
+  - default_planning_response_adapters/DisplayMotionPath
+
+planner_configs:
+
+  RRTConnect:
+    type: geometric::RRTConnect
+    range: 0.2
+
+ur_manipulator:
+  enforce_joint_model_state_space: true
+  enforce_constrained_state_space: true
+  longest_valid_segment_fraction: 0.05
+  projection_evaluator: joints(shoulder_pan_joint,shoulder_lift_joint)
+  planner_configs:
+    - RRTConnect
+
+gripper_group:
+  planner_configs:
+      - RRTConnect
+
