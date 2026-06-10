@@ -1,0 +1,4 @@
+pyserial
+ur-rtde
+vassar-feetech-servo-sdk
+# feetech-servo-sdk

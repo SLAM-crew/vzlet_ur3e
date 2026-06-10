@@ -4,17 +4,23 @@ ws/log/
 ws/output/
 
 # fix later
-ws/src/ 
+ws/src/feetech_ros2_driver 
+ws/src/Universal_Robots_Client_Library 
+ws/src/Universal_Robots_ROS2_Driver 
 
 ws/src/**/__pycache__/
 ws/src/**/.DS_Store
 ws/src/**/build/
 ws/src/**/install/
 ws/src/**/log/
+
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
 .DS_Store
 venv/
 .venv/
-__pycache__/
+__pycache__/ 
+
+ws/dataset_output
+ws/models

@@ -4,6 +4,15 @@
 
 Complete [Prepare robot and network connection](https://docs.universal-robots.com/Universal_Robots_ROS2_Documentation/doc/ur_robot_driver/ur_robot_driver/doc/installation/robot_setup.html#prepare-robot-and-network-connection): Robot setup and Network setup.
 
+[Realtime kernel](https://ubuntu.com/blog/enable-real-time-ubuntu) вместо того чтобы билдить по инструкциии, мы нашли что у ubuntu про есть ууже сбилженный что ли
+Ubuntu 22 24+  вроде версии только
+```
+sudo add-apt-repository universe
+sudo apt update
+sudo apt install ubuntu-realtime
+```
+
+
 How to launch?
 
 First - ros2driver
@@ -86,10 +95,15 @@ git clone -b kilted https://github.com/UniversalRobots/Universal_Robots_ROS2_Dri
 ```
 
 
-### Docker setup
+Изменили safety password на teacher pedant: стал `vz`
 
-In work, not tested
+Параллельный хват
+LECP6P1-LEHZ25K2-14 - power supply dc24 japan
+LEHZ25K2-14-S116P1
+xact gripper model (LEHZ25K2-14), the PNP controller (LECP6P1)
+[Operation manual for LEH Electric Gripper](https://www.smcworld.com/upfiles/manual/en-jp/files/LEHZ-OM00217.pdf)
 
+https://makerbotics.com/product/mb-elc-servo-controller-urt1/
 
 ---
 
