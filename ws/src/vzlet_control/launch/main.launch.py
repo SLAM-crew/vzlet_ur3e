@@ -12,7 +12,7 @@ def generate_launch_description():
         launch_arguments={
             'ur_type': 'ur3e',
             'robot_ip': '192.168.31.59',
-            'kinematics_params_file': '/home/orangevz/vzlet_ur3e/config/ur3e_calibration.yaml',
+            'kinematics_params_file': '/home/sonieth2/vzlet_ur3e/config/ur3e_calibration.yaml',
             'launch_rviz': 'false',
             'initial_joint_controller': 'joint_trajectory_controller',
         }.items()

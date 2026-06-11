@@ -13,6 +13,8 @@ sudo apt install ubuntu-realtime
 ```
 
 
+realsense ros2 driver: https://github.com/realsenseai/realsense-ros
+
 How to launch?
 
 First - ros2driver
@@ -109,7 +111,7 @@ https://makerbotics.com/product/mb-elc-servo-controller-urt1/
 
 About `Universal_Robots_ROS2_Driver/Universal_Robots_ROS2_Driver.kilted.repos` file --> do not copy it somehow:
 ```
-repositories:
+repositories:realsense ros2 driver
   Universal_Robots_ROS2_Description:
     type: git
     url: https://github.com/UniversalRobots/Universal_Robots_ROS2_Description.git

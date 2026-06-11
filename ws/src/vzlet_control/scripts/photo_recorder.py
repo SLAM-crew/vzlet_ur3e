@@ -1,4 +1,4 @@
-#!/home/orangevz/vzlet_ur3e/venv/bin/python3
+#!/home/sonieth2/vzlet_ur3e/ur_rtde_scripts/venv/bin/python3
 import os
 import sys
 import time
