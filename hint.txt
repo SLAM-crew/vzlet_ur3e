@@ -1,0 +1,34 @@
+# DRIVERS
+
+maybe: chmod 666 /dev/ttyUSB0
+
+ros2 launch ur_robot_driver ur_control.launch.py ur_type:=ur3e robot_ip:=192.168.31.59 kinematics_params_file:=/home/orangevz/vzlet_ur3e/config/ur3e_calibration.yaml launch_rviz:=false initial_joint_controller:=joint_trajectory_controller
+
+ros2 launch realsense2_camera rs_launch.py
+
+
+
+
+# SERVOING 
+
+ros2 launch ur_moveit_config ur_moveit.launch.py ur_type:=ur3e launch_servo:=true
+
+ros2 control switch_controllers --deactivate joint_trajectory_controller
+
+ros2 control switch_controllers --activate forward_position_controller 
+
+ros2 service call /servo_node/switch_command_type moveit_msgs/srv/ServoCommandType "{command_type: 1}"
+
+ros2 run teleop_twist_keyboard teleop_twist_keyboard --ros-args --remap /cmd_vel:=/servo_node/delta_twist_cmds -p stamped:=true -p frame_id:=tool0 -p speed:=0.1 -p turn:=0.1
+
+# TOOLS
+
+ros2 run vzlet_control tool_aligner.py
+
+ros2 run vzlet_control circle_centering.py
+
+# SWITCH CONTROLLERS BACK
+
+ros2 control switch_controllers --deactivate forward_position_controller 
+
+ros2 control switch_controllers --activate joint_trajectory_controller
