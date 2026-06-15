@@ -8,16 +8,18 @@ from typing import Optional, Tuple
 import cv2
 import numpy as np
 import rclpy
+from geometry_msgs.msg import PointStamped
 from rclpy.parameter import Parameter
 from sensor_msgs.msg import Image
+from tf2_geometry_msgs import do_transform_point
 
 from pipeline_types import (
     CIRCLE_DETECTION_CONTOUR,
     CIRCLE_DETECTION_MASK,
     CIRCLE_DETECTION_YOLO,
-    CIRCLE_DETECTION_METHODS,
     DEFAULT_YOLO_MODEL_FILE,
 )
+
 
 class VisionProcessor:
     def __init__(self, node):
@@ -161,6 +163,54 @@ class VisionProcessor:
     def _box_cls_id(self, box) -> int:
         return int(box.cls.item()) if getattr(box, "cls", None) is not None else -1
     
+
+    def pixel_to_base_parallel_camera(self, u: float, v: float):
+        base_frame = self.node.get_parameter("base_frame").value
+        camera_frame = self.node.get_parameter("camera_frame").value
+
+        fx = self.fx()
+        fy = self.fy()
+        cx = self.cx()
+        cy = self.cy()
+
+        depth_m = self.node.motion.get_camera_height_depth_estimate()
+        if depth_m is None or depth_m <= 0.0:
+            self.node.get_logger().warn("Invalid camera-to-plane depth")
+            return None
+
+        try:
+            # Pixel -> metric point in camera optical frame
+            target_cam = PointStamped()
+            target_cam.header.frame_id = camera_frame
+            target_cam.header.stamp = self.node.get_clock().now().to_msg()
+
+            target_cam.point.x = (u - cx) * depth_m / fx
+            target_cam.point.y = (v - cy) * depth_m / fy
+            target_cam.point.z = depth_m
+
+            # Camera frame -> base_link
+            tf_base_cam = self.node.tf_buffer.lookup_transform(
+                base_frame,
+                camera_frame,
+                rclpy.time.Time(),
+            )
+
+            target_base = do_transform_point(target_cam, tf_base_cam)
+
+            # Object is assumed to lie on the known target plane
+            target_base.point.z = float(
+                self.node.get_parameter("target_plane_z_base").value
+            )
+
+            return target_base
+
+        except Exception as exc:
+            self.node.get_logger().warn(
+                f"Could not convert YOLO pixel to base point: {exc}"
+            )
+            return None
+
+
     def image_callback(self, msg: Image):
         if not self.visual_servo_active:
             return
@@ -184,100 +234,119 @@ class VisionProcessor:
             if bool(self.node.get_parameter("stop_when_lost").value):
                 self.node.motion.publish_zero_twist(reason="target lost")
             return
-
+        
         target_u, target_v, radius_px = detection
-        tool_projection = self._last_tool_projection
+        target_base = self.pixel_to_base_parallel_camera( target_u, target_v, )
 
-        if tool_projection is None:
-            self.draw_target_overlay(
+        tool_pose = self.node.motion.get_current_tool0_pose()
+
+        depth_m = self.node.motion.get_camera_height_depth_estimate() or 0.0
+
+        if target_base is None or tool_pose is None:
+            self.draw_servo_overlay(
                 debug_image,
                 target_u,
                 target_v,
                 radius_px,
-                self.cx(),
-                self.cy(),
-                0.0,
-                0.0,
-                0.0,
+                target_base,
+                tool_pose,
                 0.0,
                 0.0,
                 None,
-                "tool0 projection unavailable",
+                depth_m,
+                None,
+                "metric target/tool unavailable",
             )
             self.publish_debug_image(debug_image, msg.header)
             self.centered_since_s = None
-            self.node.motion.publish_zero_twist(reason="tool0 projection unavailable")
+            self.node.motion.publish_zero_twist(reason="metric target/tool unavailable")
             return
 
-        tool0_u, tool0_v, _tool0_z_cam = tool_projection
-        raw_error_u_px = target_u - tool0_u
-        raw_error_v_px = target_v - tool0_v
+        raw_error_x_base = target_base.point.x - tool_pose.pose.position.x
+        raw_error_y_base = target_base.point.y - tool_pose.pose.position.y
 
-        error_u_px = raw_error_u_px
-        error_v_px = raw_error_v_px
-        pixel_deadband = float(self.node.get_parameter("pixel_deadband").value)
-        if abs(error_u_px) < pixel_deadband:
-            error_u_px = 0.0
-        if abs(error_v_px) < pixel_deadband:
-            error_v_px = 0.0
+        metric_deadband = 0.001  # 1 mm, tune
+        error_x_base = raw_error_x_base
+        error_y_base = raw_error_y_base
 
-        depth_m = self.node.motion.get_camera_height_depth_estimate()
-        if depth_m is None or depth_m <= 0.0:
-            self.draw_target_overlay(debug_image, target_u, target_v, radius_px,
-                                     tool0_u, tool0_v, raw_error_u_px, raw_error_v_px,
-                                     0.0, 0.0, 0.0, None, "invalid camera height depth")
-            self.publish_debug_image(debug_image, msg.header)
-            self.centered_since_s = None
-            self.node.motion.publish_zero_twist(reason="invalid camera height depth")
-            return
+        if abs(error_x_base) < metric_deadband:
+            error_x_base = 0.0
+        if abs(error_y_base) < metric_deadband:
+            error_y_base = 0.0
 
-        error_x_cam = error_u_px * depth_m / self.fx()
-        error_y_cam = error_v_px * depth_m / self.fy()
-
-        error_tool = self.node.motion.transform_error_to_tool_frame(
-            error_x_cam,
-            error_y_cam,
+        error_tool = self.node.motion.transform_error_from_base_to_tool_frame(
+            error_x_base,
+            error_y_base,
             0.0,
             msg.header.stamp,
         )
+
         if error_tool is None:
-            self.draw_target_overlay(debug_image, target_u, target_v, radius_px,
-                                     tool0_u, tool0_v, raw_error_u_px, raw_error_v_px,
-                                     error_x_cam, error_y_cam, depth_m, None,
-                                     "camera to tool TF unavailable")
+            self.draw_servo_overlay(
+                debug_image,
+                target_u,
+                target_v,
+                radius_px,
+                target_base,
+                tool_pose,
+                raw_error_x_base,
+                raw_error_y_base,
+                None,
+                depth_m,
+                None,
+                "base to tool TF unavailable",
+            )
             self.publish_debug_image(debug_image, msg.header)
             self.centered_since_s = None
-            self.node.motion.publish_zero_twist(reason="camera to tool TF unavailable")
+            self.node.motion.publish_zero_twist(reason="base to tool TF unavailable")
             return
 
         ex_tool, ey_tool, ez_tool_observed = error_tool
+
         vx, vy, vz = self.node.motion.publish_servo_twist(
             ex_tool,
             ey_tool,
             0.0,
             ez_tool_observed,
-            raw_error_u_px,
-            raw_error_v_px,
+            raw_error_x_base,
+            raw_error_y_base,
             depth_m,
         )
 
-        self.update_servo_convergence(raw_error_u_px, raw_error_v_px)
+        self.update_servo_convergence(
+            raw_error_x_base,
+            raw_error_y_base,
+        )
 
-        self.draw_target_overlay(debug_image, target_u, target_v, radius_px,
-                                 tool0_u, tool0_v, raw_error_u_px, raw_error_v_px,
-                                 error_x_cam, error_y_cam, depth_m, (vx, vy, vz),
-                                 "tracking XY only")
+        self.draw_servo_overlay(
+            debug_image,
+            target_u,
+            target_v,
+            radius_px,
+            target_base,
+            tool_pose,
+            raw_error_x_base,
+            raw_error_y_base,
+            error_tool,
+            depth_m,
+            (vx, vy, vz),
+            "tracking metric XY only",
+        )
+
         self.publish_debug_image(debug_image, msg.header)
+       
 
-    def update_servo_convergence(self, raw_error_u_px: float, raw_error_v_px: float):
+
+    def update_servo_convergence(self, raw_error_x_m: float, raw_error_y_m: float):
         now_s = self.now_s()
-        deadband = float(self.node.get_parameter("pixel_deadband").value)
+        deadband_m = 0.001  # 1 mm, tune
         settle_time_s = float(self.node.get_parameter("servo_settle_time").value)
 
         self.last_target_time_s = now_s
-        self.last_pixel_error = (raw_error_u_px, raw_error_v_px)
+        self.last_pixel_error = (raw_error_x_m, raw_error_y_m)
 
-        inside = abs(raw_error_u_px) <= deadband and abs(raw_error_v_px) <= deadband
+        inside = abs(raw_error_x_m) <= deadband_m and abs(raw_error_y_m) <= deadband_m
+
         if inside:
             if self.centered_since_s is None:
                 self.centered_since_s = now_s
@@ -445,166 +514,147 @@ class VisionProcessor:
         return best
 
 
-    def detect_yolo(
-    self,
-    bgr: np.ndarray,
-    tool_projection: Optional[Tuple[float, float, float]] = None,
-) -> Optional[Tuple[float, float, float]]:
+    def _get_target_class_id(self, result, target_class_name: str):
+        names = getattr(result, "names", {})
+
+        for cls_id, cls_name in names.items():
+            if cls_name == target_class_name:
+                return int(cls_id)
+
+        self.node.get_logger().warn(
+            f"YOLO target class '{target_class_name}' not found in model classes: {names}"
+        )
+        return None
+
+
+    def _matched_boxes(self, boxes, target_class_id: int):
+        return [
+            box for box in boxes
+            if self._box_cls_id(box) == target_class_id
+        ]
+
+
+    def _make_debug_candidate(self, box, class_name: str):
+        conf = self._box_conf(box)
+        center_u, center_v, radius_px, area = self._box_center_radius_area(box)
+        x1, y1, x2, y2 = self._box_to_xyxy(box)
+
+        return {
+            "box": box,
+            "xyxy": (x1, y1, x2, y2),
+            "conf": conf,
+            "center_u": center_u,
+            "center_v": center_v,
+            "radius_px": radius_px,
+            "area": area,
+            "selected": False,
+            "class_name": class_name,
+        }
+
+
+    def _select_highest_confidence(self, candidates):
+        return max(candidates, key=lambda item: item["conf"])
+
+
+    def _select_nearest_to_tool(self, candidates, tool_projection):
+        if tool_projection is None:
+            return self._select_highest_confidence(candidates)
+
+        tool0_u, tool0_v, _tool0_z_cam = tool_projection
+
+        return min(
+            candidates,
+            key=lambda item: math.hypot(
+                item["center_u"] - tool0_u,
+                item["center_v"] - tool0_v,
+            ),
+        )
+
+
+    def detect_yolo(self, bgr: np.ndarray, tool_projection: Optional[Tuple[float, float, float]] = None,) -> Optional[Tuple[float, float, float]]:
         model = self.get_yolo_model()
         if model is None:
             return None
 
         try:
-            results = model.predict(source=bgr, verbose=False, conf=0.15)
+            results = model.predict(source=bgr, verbose=False, conf=0.25)
         except Exception as exc:
             self.node.get_logger().warn(f"YOLO inference failed: {exc}")
             return None
 
         if not results:
+            self._last_yolo_debug_boxes = []
             return None
 
         result = results[0]
         boxes = getattr(result, "boxes", None)
+
         if boxes is None or len(boxes) == 0:
             self._last_yolo_debug_boxes = []
             return None
 
         target_class_name = self.yolo_target_class or "sensor"
-        target_class_id = None
-        names = getattr(result, "names", {})
-
-        for cls_id, cls_name in names.items():
-            if cls_name == target_class_name:
-                target_class_id = cls_id
-                break
+        target_class_id = self._get_target_class_id(result, target_class_name)
 
         if target_class_id is None:
-            self.node.get_logger().warn(
-                f"YOLO target class '{target_class_name}' not found in model classes: {names}"
-            )
             self._last_yolo_debug_boxes = []
             return None
 
-        matched_boxes = [
-            box for box in boxes
-            if self._box_cls_id(box) == target_class_id
-        ]
+        matched_boxes = self._matched_boxes(boxes, target_class_id)
 
         if not matched_boxes:
             self._last_yolo_debug_boxes = []
             return None
 
-        # Debug boxes are consumed by draw_target_overlay().
-        self._last_yolo_debug_boxes = []
-
-        if target_class_name == "cell":
-            best_box = max(matched_boxes, key=self._box_conf)
-            best_conf = self._box_conf(best_box)
-
-            center_u, center_v, radius_px, area = self._box_center_radius_area(best_box)
-            x1, y1, x2, y2 = self._box_to_xyxy(best_box)
-
-            self._last_yolo_debug_boxes = [
-                {
-                    "xyxy": (x1, y1, x2, y2),
-                    "conf": best_conf,
-                    "selected": True,
-                    "class_name": target_class_name,
-                }
-            ]
-
-            self.node.get_logger().debug(
-                f"YOLO cell detection: selected highest conf={best_conf:.3f}, "
-                f"center=({center_u:.1f}, {center_v:.1f}), radius={radius_px:.1f}, area={area:.1f}"
-            )
-
-            return float(center_u), float(center_v), float(radius_px)
+        candidates = [
+            self._make_debug_candidate(box, target_class_name)
+            for box in matched_boxes
+        ]
 
         if target_class_name == "sensor":
-            candidates = []
-
-            for box in matched_boxes:
-                conf = self._box_conf(box)
-                center_u, center_v, radius_px, area = self._box_center_radius_area(box)
-
-                if conf <= 0.5:
-                    continue
-                if area <= 50.0:
-                    continue
-
-                x1, y1, x2, y2 = self._box_to_xyxy(box)
-
-                candidates.append(
-                    {
-                        "box": box,
-                        "xyxy": (x1, y1, x2, y2),
-                        "conf": conf,
-                        "center_u": center_u,
-                        "center_v": center_v,
-                        "radius_px": radius_px,
-                        "area": area,
-                        "selected": False,
-                        "class_name": target_class_name,
-                    }
-                )
+            candidates = [
+                candidate for candidate in candidates
+                if candidate["conf"] > 0.5 and candidate["area"] > 50.0
+            ]
 
             if not candidates:
                 self._last_yolo_debug_boxes = []
                 return None
 
-            tool_projection = self._last_tool_projection
-
-            if tool_projection is None:
-                selected = max(candidates, key=lambda item: item["conf"])
-            else:
-                tool0_u, tool0_v, _tool0_z_cam = tool_projection
-
-                selected = min(
-                    candidates,
-                    key=lambda item: math.hypot(
-                        item["center_u"] - tool0_u,
-                        item["center_v"] - tool0_v,
-                    ),
-                )
-
-            selected["selected"] = True
-            self._last_yolo_debug_boxes = candidates
-
-            self.node.get_logger().debug(
-                f"YOLO sensor detection: candidates={len(candidates)}, "
-                f"selected conf={selected['conf']:.3f}, "
-                f"center=({selected['center_u']:.1f}, {selected['center_v']:.1f}), "
-                f"radius={selected['radius_px']:.1f}, area={selected['area']:.1f}"
+            effective_tool_projection = (
+                tool_projection
+                if tool_projection is not None
+                else self._last_tool_projection
             )
 
-            return (
-                float(selected["center_u"]),
-                float(selected["center_v"]),
-                float(selected["radius_px"]),
+            selected = self._select_nearest_to_tool(
+                candidates,
+                effective_tool_projection,
             )
 
-        # Default behavior for any other class: highest confidence.
-        best_box = max(matched_boxes, key=self._box_conf)
-        best_conf = self._box_conf(best_box)
+            debug_boxes = candidates
 
-        center_u, center_v, radius_px, area = self._box_center_radius_area(best_box)
-        x1, y1, x2, y2 = self._box_to_xyxy(best_box)
+        else:
+            selected = self._select_highest_confidence(candidates)
+            debug_boxes = [selected]
 
-        self._last_yolo_debug_boxes = [
-            {
-                "xyxy": (x1, y1, x2, y2),
-                "conf": best_conf,
-                "selected": True,
-                "class_name": target_class_name,
-            }
-        ]
+        selected["selected"] = True
+        self._last_yolo_debug_boxes = debug_boxes
 
         self.node.get_logger().debug(
-            f"YOLO detection: class={target_class_name}, conf={best_conf:.3f}, "
-            f"center=({center_u:.1f}, {center_v:.1f}), radius={radius_px:.1f}, area={area:.1f}"
+            f"YOLO {target_class_name} detection: "
+            f"candidates={len(candidates)}, "
+            f"selected conf={selected['conf']:.3f}, "
+            f"center=({selected['center_u']:.1f}, {selected['center_v']:.1f}), "
+            f"radius={selected['radius_px']:.1f}, "
+            f"area={selected['area']:.1f}"
         )
 
-        return float(center_u), float(center_v), float(radius_px)
+        return (
+            float(selected["center_u"]),
+            float(selected["center_v"]),
+            float(selected["radius_px"]),
+        )
 
     def get_yolo_model(self):
         if self._yolo_model is not None:
@@ -629,44 +679,125 @@ class VisionProcessor:
             return None
 
 
-    def draw_target_overlay(
+    def draw_servo_overlay(
         self,
         image,
         target_u,
         target_v,
         radius_px,
-        ref_u,
-        ref_v,
-        raw_error_u_px,
-        raw_error_v_px,
-        error_x_cam,
-        error_y_cam,
+        target_base,
+        tool_pose,
+        raw_error_x_base,
+        raw_error_y_base,
+        error_tool,
         depth_m,
         cmd,
         status,
     ):
-        ref_px = (int(round(ref_u)), int(round(ref_v)))
         target_px = (int(round(target_u)), int(round(target_v)))
-        cv2.drawMarker(image, ref_px, (255, 0, 0), markerType=cv2.MARKER_CROSS, markerSize=24, thickness=2)
+
+        # Draw YOLO target
         cv2.circle(image, target_px, int(round(radius_px)), (0, 255, 0), 2)
-        cv2.drawMarker(image, target_px, (0, 0, 255), markerType=cv2.MARKER_CROSS, markerSize=16, thickness=2)
-        cv2.arrowedLine(image, ref_px, target_px, (0, 255, 255), 2, tipLength=0.2)
+        cv2.drawMarker(
+            image,
+            target_px,
+            (0, 0, 255),
+            markerType=cv2.MARKER_CROSS,
+            markerSize=16,
+            thickness=2,
+        )
+
+        # Draw projected tool0 only for visualization/debug.
+        # Do not use this for control.
+        tool_projection = self.node.motion.project_tool0_to_image()
+        if tool_projection is not None:
+            tool0_u, tool0_v, _tool0_z_cam = tool_projection
+            tool_px = (int(round(tool0_u)), int(round(tool0_v)))
+
+            cv2.drawMarker(
+                image,
+                tool_px,
+                (255, 0, 0),
+                markerType=cv2.MARKER_CROSS,
+                markerSize=24,
+                thickness=2,
+            )
+
+            cv2.arrowedLine(
+                image,
+                tool_px,
+                target_px,
+                (0, 255, 255),
+                2,
+                tipLength=0.2,
+            )
+
+            pixel_du = target_u - tool0_u
+            pixel_dv = target_v - tool0_v
+            tool_px_text = f"tool0_px: u={tool0_u:.1f}, v={tool0_v:.1f}"
+            pixel_error_text = (
+                f"pixel_error visual only: du={pixel_du:+.1f}, "
+                f"dv={pixel_dv:+.1f}"
+            )
+        else:
+            tool_px_text = "tool0_px: unavailable"
+            pixel_error_text = "pixel_error visual only: unavailable"
+
+        if target_base is not None:
+            target_base_text = (
+                f"target_base: x={target_base.point.x:+.4f}, "
+                f"y={target_base.point.y:+.4f}, "
+                f"z={target_base.point.z:+.4f} m"
+            )
+        else:
+            target_base_text = "target_base: unavailable"
+
+        if tool_pose is not None:
+            tool_base_text = (
+                f"tool0_base: x={tool_pose.pose.position.x:+.4f}, "
+                f"y={tool_pose.pose.position.y:+.4f}, "
+                f"z={tool_pose.pose.position.z:+.4f} m"
+            )
+        else:
+            tool_base_text = "tool0_base: unavailable"
+
+        if error_tool is not None:
+            ex_tool, ey_tool, ez_tool = error_tool
+            tool_error_text = (
+                f"tool_error: x={ex_tool:+.4f}, "
+                f"y={ey_tool:+.4f}, "
+                f"z={ez_tool:+.4f} m"
+            )
+        else:
+            tool_error_text = "tool_error: unavailable"
+
+        if cmd is not None:
+            vx, vy, vz = cmd
+            cmd_text = (
+                f"cmd tool0: vx={vx:+.4f}, "
+                f"vy={vy:+.4f}, "
+                f"vz={vz:+.4f} m/s"
+            )
+        else:
+            cmd_text = "cmd tool0: zero"
 
         lines = [
             f"status: {status}",
             f"target_px: u={target_u:.1f}, v={target_v:.1f}, r={radius_px:.1f}",
-            f"tool0_px: u={ref_u:.1f}, v={ref_v:.1f}",
-            f"pixel_error target-tool0: du={raw_error_u_px:+.1f}, dv={raw_error_v_px:+.1f}",
+            tool_px_text,
+            pixel_error_text,
+            target_base_text,
+            tool_base_text,
+            (
+                f"base_error_xy: x={raw_error_x_base:+.4f}, "
+                f"y={raw_error_y_base:+.4f} m"
+            ),
+            tool_error_text,
             f"depth: {depth_m:.4f} m",
-            f"camera_error: x={error_x_cam:+.4f} m, y={error_y_cam:+.4f} m",
+            cmd_text,
         ]
-        if cmd is not None:
-            vx, vy, vz = cmd
-            lines.append(f"cmd tool0 XY only: vx={vx:+.4f}, vy={vy:+.4f}, vz={vz:+.4f} m/s")
-        else:
-            lines.append("cmd tool0: zero")
-        self.draw_text_block(image, lines, 10, 24)
 
+        self.draw_text_block(image, lines, 10, 24)
 
     def draw_no_target_overlay(self, image):
         center_px = (int(round(self.cx())), int(round(self.cy())))
@@ -704,69 +835,3 @@ class VisionProcessor:
 
     def cy(self):
         return float(self.node.get_parameter("cy").value)
-    
-
-
-  
-
-    # def publish_servo_twist(
-    #     self,
-    #     ex_tool,
-    #     ey_tool,
-    #     ez_tool_cmd,
-    #     ez_tool_observed,
-    #     error_u_px,
-    #     error_v_px,
-    #     depth_m,
-    # ):
-    #     gain = float(self.node.get_parameter("linear_gain").value)
-    #     max_speed = float(self.node.get_parameter("max_linear_speed").value)
-    #     vx = self.clamp(gain * ex_tool, -max_speed, max_speed)
-    #     vy = self.clamp(gain * ey_tool, -max_speed, max_speed)
-    #     vz = 0.0
-
-    #     twist = TwistStamped()
-    #     twist.header.stamp = self.get_clock().now().to_msg()
-    #     twist.header.frame_id = self.node.tool_frame
-    #     twist.twist.linear.x = vx
-    #     twist.twist.linear.y = vy
-    #     twist.twist.linear.z = vz
-    #     twist.twist.angular.x = 0.0
-    #     twist.twist.angular.y = 0.0
-    #     twist.twist.angular.z = 0.0
-    #     self.twist_pub.publish(twist)
-
-    #     self.log_servo_command(
-    #         "tracking",
-    #         vx,
-    #         vy,
-    #         vz,
-    #         ex_tool,
-    #         ey_tool,
-    #         ez_tool_cmd,
-    #         ez_tool_observed,
-    #         error_u_px,
-    #         error_v_px,
-    #         depth_m,
-    #     )
-    #     return vx, vy, vz
-
-
-    # def publish_zero_twist(self, reason="zero"):
-    #     twist = TwistStamped()
-    #     twist.header.stamp = self.get_clock().now().to_msg()
-    #     twist.header.frame_id = self.node.tool_frame
-    #     self.twist_pub.publish(twist)
-    #     self.log_servo_command(
-    #         reason,
-    #         0.0,
-    #         0.0,
-    #         0.0,
-    #         0.0,
-    #         0.0,
-    #         0.0,
-    #         0.0,
-    #         0.0,
-    #         0.0,
-    #         0.0,
-    #     )

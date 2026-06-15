@@ -1,71 +1,35 @@
 #!/home/sonieth2/vzlet_ur3e/ur_rtde_scripts/venv/bin/python3
 
 import argparse
-import copy
-import csv
-import math
 import time
-import threading
-from pathlib import Path
-from typing import List, Optional, Tuple
-
-import cv2
-import numpy as np
 
 import rclpy
-from rclpy.node import Node
+from control_msgs.action import ParallelGripperCommand
+from controller_manager_msgs.srv import SwitchController
+from cv_bridge import CvBridge
+from geometry_msgs.msg import Pose, TwistStamped
+from moveit_msgs.action import MoveGroup
+from moveit_msgs.msg import CollisionObject, PlanningScene
+from moveit_msgs.srv import ServoCommandType
 from rclpy.action import ActionClient
 from rclpy.duration import Duration
+from rclpy.node import Node
 from rclpy.parameter import Parameter
-from action_msgs.msg import GoalStatus
-
-from geometry_msgs.msg import (
-    Pose,
-    PoseStamped,
-    Quaternion,
-    TwistStamped,
-    Vector3Stamped,
-    PointStamped,
-)
 from sensor_msgs.msg import Image
-from cv_bridge import CvBridge
-
-from tf2_ros import (
-    Buffer,
-    TransformListener,
-    LookupException,
-    ConnectivityException,
-    ExtrapolationException,
-)
-from tf2_geometry_msgs import do_transform_vector3, do_transform_point
-
-from moveit_msgs.action import MoveGroup
-from moveit_msgs.srv import ServoCommandType
-from controller_manager_msgs.srv import SwitchController
-from moveit_msgs.msg import (
-    Constraints,
-    PositionConstraint,
-    OrientationConstraint,
-    BoundingVolume,
-    MotionPlanRequest,
-    PlanningScene,
-    CollisionObject,
-)
 from shape_msgs.msg import SolidPrimitive
-from control_msgs.action import ParallelGripperCommand
+from tf2_ros import Buffer, TransformListener
 
 from pipeline_motion import MotionController
 from pipeline_vision import VisionProcessor
 
 from pipeline_types import (
-    DEFAULT_CSV_FILE, 
-    DEFAULT_YOLO_MODEL_FILE, 
-    CIRCLE_DETECTION_YOLO,
-    CIRCLE_DETECTION_MASK,
-    INITIAL_ZONE,
-    FINAL_ZONE,
     ACTION_PICK,
-    ACTION_PLACE
+    ACTION_PLACE,
+    CIRCLE_DETECTION_YOLO,
+    DEFAULT_CSV_FILE,
+    DEFAULT_YOLO_MODEL_FILE,
+    FINAL_ZONE,
+    INITIAL_ZONE,
 )
 
 class IntegratedPickPipeline(Node):
@@ -135,7 +99,7 @@ class IntegratedPickPipeline(Node):
         self.declare_parameter("target_plane_z_base", 0.03)
         self.declare_parameter("linear_gain", 6.0)
         self.declare_parameter("max_linear_speed", 0.2)
-        self.declare_parameter("pixel_deadband", 4.0)
+        self.declare_parameter("pixel_deadband", 2.0)
         self.declare_parameter("servo_timeout", 90.0)
         self.declare_parameter("servo_settle_time", 1.0)
         self.declare_parameter("stop_when_lost", True)
@@ -230,7 +194,7 @@ class IntegratedPickPipeline(Node):
         stages = [
             ("start zone pose", lambda: self.motion.move_to_zone(INITIAL_ZONE)),
             ("tool alignment", self.motion.align_tool_to_ground),
-            ("visual servo pick", lambda: self.vision.run_visual_servo_stage(CIRCLE_DETECTION_YOLO, yolo_target_class="sensor")),
+            ("visual servo", lambda: self.vision.run_visual_servo_stage(CIRCLE_DETECTION_YOLO, yolo_target_class="sensor")),
             ("grasp-pick", lambda: self.motion.execute_grasp_sequence(ACTION_PICK)),
             ("final zone pose", lambda: self.motion.move_to_zone(FINAL_ZONE)),
             # ("final zone pose", lambda: self.motion.move_to_zone(FINAL_ZONE, constraint="z_ground")), # TODO fix it

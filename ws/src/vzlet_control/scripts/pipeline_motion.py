@@ -7,19 +7,29 @@ from typing import Optional, Tuple
 
 import numpy as np
 import rclpy
-from rclpy.duration import Duration
 from action_msgs.msg import GoalStatus
-from geometry_msgs.msg import PointStamped, PoseStamped, Quaternion, TwistStamped, Vector3Stamped
+from control_msgs.action import ParallelGripperCommand
+from controller_manager_msgs.srv import SwitchController
+from geometry_msgs.msg import (
+    PointStamped,
+    PoseStamped,
+    Quaternion,
+    TwistStamped,
+    Vector3Stamped,
+)
 from moveit_msgs.action import MoveGroup
-from moveit_msgs.msg import BoundingVolume, Constraints, MotionPlanRequest, OrientationConstraint, PositionConstraint
+from moveit_msgs.msg import (
+    BoundingVolume,
+    Constraints,
+    MotionPlanRequest,
+    OrientationConstraint,
+    PositionConstraint,
+)
 from moveit_msgs.srv import ServoCommandType
 from shape_msgs.msg import SolidPrimitive
 from tf2_geometry_msgs import do_transform_point, do_transform_vector3
-from tf2_ros import ConnectivityException, ExtrapolationException, LookupException
-from controller_manager_msgs.srv import SwitchController
-from control_msgs.action import ParallelGripperCommand
 
-from pipeline_types import ACTION_PICK
+from pipeline_types import ACTION_PICK, ACTION_PLACE
 
 
 class MotionController:
@@ -117,31 +127,27 @@ class MotionController:
         base_frame = self.node.get_parameter("base_frame").value
         tool_frame = self.node.get_parameter("tool_frame").value
 
-        self.node.get_logger().info(f"Waiting for TF {base_frame} -> {tool_frame}")
-        while rclpy.ok():
-            rclpy.spin_once(self.node, timeout_sec=0.1)
-            try:
-                transform = self.node.tf_buffer.lookup_transform(
-                    base_frame,
-                    tool_frame,
-                    rclpy.time.Time(),
-                    timeout=Duration(seconds=0.5),
-                )
-                pose = PoseStamped()
-                pose.header.frame_id = base_frame
-                pose.header.stamp = self.node.get_clock().now().to_msg()
-                pose.pose.position.x = transform.transform.translation.x
-                pose.pose.position.y = transform.transform.translation.y
-                pose.pose.position.z = transform.transform.translation.z
-                pose.pose.orientation = transform.transform.rotation
-                self.node.get_logger().info(f"Found TF {base_frame} -> {tool_frame}")
-                return pose
-            except (LookupException, ConnectivityException, ExtrapolationException) as exc:
-                self.node.get_logger().warn(
-                    f"Still waiting for TF {base_frame} -> {tool_frame}: {exc}"
-                )
-                time.sleep(0.5)
-        return None
+        try:
+            tf_base_tool = self.node.tf_buffer.lookup_transform(
+                base_frame,
+                tool_frame,
+                rclpy.time.Time(),
+            )
+
+            pose = PoseStamped()
+            pose.header.frame_id = base_frame
+            pose.header.stamp = self.node.get_clock().now().to_msg()
+
+            pose.pose.position.x = tf_base_tool.transform.translation.x
+            pose.pose.position.y = tf_base_tool.transform.translation.y
+            pose.pose.position.z = tf_base_tool.transform.translation.z
+            pose.pose.orientation = tf_base_tool.transform.rotation
+
+            return pose
+
+        except Exception as exc:
+            self.node.get_logger().warn(f"Could not get current tool0 pose now: {exc}")
+            return None
 
     def create_move_goal(self, target_pose: PoseStamped, path_constraints: Optional[Constraints] = None) -> MoveGroup.Goal:
         goal = MoveGroup.Goal()
@@ -287,13 +293,11 @@ class MotionController:
 
         z_offset = abs(float(self.node.get_parameter("z_offset").value))
         lowered_pose = copy.deepcopy(start_pose)
-        
+        lowered_pose.pose.position.z = z_offset
         if action == ACTION_PICK:
-            lowered_pose.pose.position.z = z_offset
             pre_grasp_pos = float(self.node.get_parameter("gripper_open_position").value)
             post_grasp_pos = float(self.node.get_parameter("gripper_close_position").value)
-        else:
-            lowered_pose.pose.position.z = start_pose.pose.position.z - z_offset
+        elif action == ACTION_PLACE:
             pre_grasp_pos = float(self.node.get_parameter("gripper_close_position").value)
             post_grasp_pos = float(self.node.get_parameter("gripper_open_position").value)
 
@@ -472,8 +476,94 @@ class MotionController:
         time.sleep(1.5)
         return True
 
+    # def project_tool0_to_image(self) -> Optional[Tuple[float, float, float]]:
+    #     target_plane_z_base = float(self.node.get_parameter("target_plane_z_base").value)
+    #     base_frame = self.node.get_parameter("base_frame").value
+    #     tool_frame = self.node.get_parameter("tool_frame").value
+    #     camera_frame = self.node.get_parameter("camera_frame").value
+
+    #     try:
+    #         tf_base_tool = self.node.tf_buffer.lookup_transform(
+    #             base_frame,
+    #             tool_frame,
+    #             rclpy.time.Time(),
+    #             rclpy.time.Time(),
+    #         )
+    #         point_base = PointStamped()
+    #         point_base.header.stamp = self.node.get_clock().now().to_msg()
+    #         point_base.header.frame_id = base_frame
+    #         point_base.point.x = tf_base_tool.transform.translation.x
+    #         point_base.point.y = tf_base_tool.transform.translation.y
+    #         point_base.point.z = target_plane_z_base
+
+    #         tf_cam_base = self.node.tf_buffer.lookup_transform(
+    #             camera_frame,
+    #             base_frame,
+    #             rclpy.time.Time(),
+    #             rclpy.time.Time(),
+    #         )
+    #         point_cam = do_transform_point(point_base, tf_cam_base)
+    #         x = point_cam.point.x
+    #         y = point_cam.point.y
+    #         z = point_cam.point.z
+
+    #         if z <= 0.05:
+    #             self.node.get_logger().warn(f"tool0 projection invalid: z_cam={z:.4f}")
+    #             return None
+
+    #         u = self.node.vision.fx() * x / z + self.node.vision.cx()
+    #         v = self.node.vision.fy() * y / z + self.node.vision.cy()
+
+    #         margin_px = 200.0
+    #         if u < -margin_px or u > 640.0 + margin_px or v < -margin_px or v > 480.0 + margin_px:
+    #             self.node.get_logger().warn(
+    #                 f"tool0 target-plane projection outside usable image: u={u:.1f}, v={v:.1f}, z={z:.4f}"
+    #             )
+    #             return None
+
+    #         return float(u), float(v), float(z)
+    #     except Exception as exc:
+    #         self.node.get_logger().warn(f"Could not project tool0 onto image: {exc}")
+    #         return None
+
+
+    def transform_error_from_base_to_tool_frame(self, x_base, y_base, z_base, stamp):
+        base_frame = self.node.get_parameter("base_frame").value
+        tool_frame = self.node.get_parameter("tool_frame").value
+
+        vec_base = Vector3Stamped()
+        vec_base.header.stamp = stamp
+        vec_base.header.frame_id = base_frame
+        vec_base.vector.x = x_base
+        vec_base.vector.y = y_base
+        vec_base.vector.z = z_base
+
+        try:
+            tf_tool_base = self.node.tf_buffer.lookup_transform(
+                tool_frame,
+                base_frame,
+                rclpy.time.Time(),
+            )
+
+            vec_tool = do_transform_vector3(vec_base, tf_tool_base)
+
+            return (
+                vec_tool.vector.x,
+                vec_tool.vector.y,
+                vec_tool.vector.z,
+            )
+
+        except Exception as exc:
+            self.node.get_logger().warn(
+                f"Could not transform base error to tool frame: {exc}"
+            )
+            return None
+
+
     def project_tool0_to_image(self) -> Optional[Tuple[float, float, float]]:
-        target_plane_z_base = float(self.node.get_parameter("target_plane_z_base").value)
+        target_plane_z_base = float(
+            self.node.get_parameter("target_plane_z_base").value
+        )
         base_frame = self.node.get_parameter("base_frame").value
         tool_frame = self.node.get_parameter("tool_frame").value
         camera_frame = self.node.get_parameter("camera_frame").value
@@ -483,8 +573,8 @@ class MotionController:
                 base_frame,
                 tool_frame,
                 rclpy.time.Time(),
-                timeout=Duration(seconds=0.05),
             )
+
             point_base = PointStamped()
             point_base.header.stamp = self.node.get_clock().now().to_msg()
             point_base.header.frame_id = base_frame
@@ -496,9 +586,10 @@ class MotionController:
                 camera_frame,
                 base_frame,
                 rclpy.time.Time(),
-                timeout=Duration(seconds=0.05),
             )
+
             point_cam = do_transform_point(point_base, tf_cam_base)
+
             x = point_cam.point.x
             y = point_cam.point.y
             z = point_cam.point.z
@@ -511,35 +602,61 @@ class MotionController:
             v = self.node.vision.fy() * y / z + self.node.vision.cy()
 
             margin_px = 200.0
-            if u < -margin_px or u > 640.0 + margin_px or v < -margin_px or v > 480.0 + margin_px:
+            if (
+                u < -margin_px
+                or u > 640.0 + margin_px
+                or v < -margin_px
+                or v > 480.0 + margin_px
+            ):
                 self.node.get_logger().warn(
-                    f"tool0 target-plane projection outside usable image: u={u:.1f}, v={v:.1f}, z={z:.4f}"
+                    f"tool0 target-plane projection outside usable image: "
+                    f"u={u:.1f}, v={v:.1f}, z={z:.4f}"
                 )
                 return None
 
             return float(u), float(v), float(z)
+
         except Exception as exc:
             self.node.get_logger().warn(f"Could not project tool0 onto image: {exc}")
             return None
 
+    # def get_camera_height_depth_estimate(self) -> Optional[float]:
+    #     target_plane_z_base = float(self.node.get_parameter("target_plane_z_base").value)
+    #     base_frame = self.node.get_parameter("base_frame").value
+    #     camera_frame = self.node.get_parameter("camera_frame").value
+
+    #     try:
+    #         tf = self.node.tf_buffer.lookup_transform(
+    #             base_frame,
+    #             camera_frame,
+    #             rclpy.time.Time(),
+    #             rclpy.time.Time(),
+    #         )
+    #         camera_z_base = tf.transform.translation.z
+    #         return float(abs(camera_z_base - target_plane_z_base))
+    #     except Exception as exc:
+    #         self.node.get_logger().warn(f"Could not get camera z in base frame: {exc}")
+    #         return None
     def get_camera_height_depth_estimate(self) -> Optional[float]:
-        target_plane_z_base = float(self.node.get_parameter("target_plane_z_base").value)
+        target_plane_z_base = float(
+            self.node.get_parameter("target_plane_z_base").value
+        )
         base_frame = self.node.get_parameter("base_frame").value
         camera_frame = self.node.get_parameter("camera_frame").value
 
         try:
-            tf = self.node.tf_buffer.lookup_transform(
+            tf_base_cam = self.node.tf_buffer.lookup_transform(
                 base_frame,
                 camera_frame,
                 rclpy.time.Time(),
-                timeout=Duration(seconds=0.05),
             )
-            camera_z_base = tf.transform.translation.z
+
+            camera_z_base = tf_base_cam.transform.translation.z
             return float(abs(camera_z_base - target_plane_z_base))
+
         except Exception as exc:
             self.node.get_logger().warn(f"Could not get camera z in base frame: {exc}")
             return None
-
     def transform_error_to_tool_frame(self, x_cam, y_cam, z_cam, stamp):
         camera_frame = self.node.get_parameter("camera_frame").value
         tool_frame = self.node.get_parameter("tool_frame").value
@@ -555,7 +672,7 @@ class MotionController:
                 tool_frame,
                 camera_frame,
                 rclpy.time.Time(),
-                timeout=Duration(seconds=0.05),
+                rclpy.time.Time(),
             )
             vec_tool = do_transform_vector3(vec_cam, tf)
             return vec_tool.vector.x, vec_tool.vector.y, vec_tool.vector.z
