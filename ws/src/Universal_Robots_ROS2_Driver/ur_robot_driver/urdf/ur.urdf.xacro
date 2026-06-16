@@ -112,6 +112,7 @@
   <xacro:include filename="$(find realsense2_description)/urdf/_d435.urdf.xacro" />
 
   <xacro:sensor_d435 parent="tool0" use_nominal_extrinsics="$(arg use_nominal_extrinsics)" add_plug="$(arg add_plug)" use_mesh="$(arg use_mesh)">
-    <origin xyz="0.03 0 0.015" rpy="0 -1.57 3.14"/>
+    <!-- <origin xyz="0.03 0 0.015" rpy="0 -1.57 3.14"/> -->
+    <origin xyz="0.03 0 0.01" rpy="0 -1.57 3.14"/>
   </xacro:sensor_d435>
 </robot>

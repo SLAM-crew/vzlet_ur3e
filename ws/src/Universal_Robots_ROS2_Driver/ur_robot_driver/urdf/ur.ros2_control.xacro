@@ -335,7 +335,7 @@
     <ros2_control name="ScissorsGripperControl" type="system">
       <hardware>
         <plugin>feetech_ros2_driver/FeetechHardwareInterface</plugin>
-        <param name="usb_port">/dev/ttyUSB0</param>
+        <param name="usb_port">/dev/feetech_driver</param>
       </hardware>
 
       <joint name="left_finger_joint">

@@ -7,15 +7,14 @@ from typing import Optional, Tuple
 
 import numpy as np
 import rclpy
+from rclpy.duration import Duration
 from action_msgs.msg import GoalStatus
 from control_msgs.action import ParallelGripperCommand
-from controller_manager_msgs.srv import SwitchController
 from geometry_msgs.msg import (
-    PointStamped,
     PoseStamped,
+    PointStamped,
     Quaternion,
-    TwistStamped,
-    Vector3Stamped,
+
 )
 from moveit_msgs.action import MoveGroup
 from moveit_msgs.msg import (
@@ -25,9 +24,8 @@ from moveit_msgs.msg import (
     OrientationConstraint,
     PositionConstraint,
 )
-from moveit_msgs.srv import ServoCommandType
 from shape_msgs.msg import SolidPrimitive
-from tf2_geometry_msgs import do_transform_point, do_transform_vector3
+from tf2_geometry_msgs import do_transform_point
 
 from pipeline_types import ACTION_PICK, ACTION_PLACE
 
@@ -37,117 +35,45 @@ class MotionController:
         self.node = node
         self.last_log_time = self.node.get_clock().now()
 
-    def switch_to_servo_controller(self) -> bool:
-        trajectory_controller = str(self.node.get_parameter("trajectory_controller").value)
-        servo_controller = str(self.node.get_parameter("servo_controller").value)
-
-        self.node.get_logger().info(
-            f"Switching controllers for visual servo: "
-            f"deactivate={trajectory_controller}, activate={servo_controller}"
-        )
-
-        return self.call_switch_controller(
-            deactivate_controllers=[trajectory_controller],
-            activate_controllers=[servo_controller],
-            label="switch to Servo controller",
-        )
-
-    def switch_to_trajectory_controller(self) -> bool:
-        trajectory_controller = str(self.node.get_parameter("trajectory_controller").value)
-        servo_controller = str(self.node.get_parameter("servo_controller").value)
-
-        self.node.get_logger().info(
-            f"Switching controllers back after visual servo: "
-            f"deactivate={servo_controller}, activate={trajectory_controller}"
-        )
-
-        return self.call_switch_controller(
-            deactivate_controllers=[servo_controller],
-            activate_controllers=[trajectory_controller],
-            label="switch back to trajectory controller",
-        )
-
-    def call_switch_controller(self, deactivate_controllers, activate_controllers, label: str) -> bool:
-        request = SwitchController.Request()
-        request.deactivate_controllers = list(deactivate_controllers)
-        request.activate_controllers = list(activate_controllers)
-
-        timeout_s = float(self.node.get_parameter("controller_switch_timeout").value)
-        request.timeout.sec = int(timeout_s)
-        request.timeout.nanosec = int((timeout_s - int(timeout_s)) * 1e9)
-
-        future = self.node.switch_controller_client.call_async(request)
-
-        rclpy.spin_until_future_complete(self.node, future, timeout_sec=timeout_s + 5.0)
-
-        if not future.done():
-            self.node.get_logger().error(f"{label}: service call timed out")
-            return False
-
-        response = future.result()
-        if response is None:
-            self.node.get_logger().error(f"{label}: no service response")
-            return False
-
-        if not response.ok:
-            self.node.get_logger().error(f"{label}: controller_manager rejected switch")
-            return False
-
-        self.node.get_logger().info(f"{label}: succeeded")
-        return True
-
-    def set_servo_command_type(self) -> bool:
-        command_type = int(self.node.get_parameter("servo_command_type").value)
-
-        request = ServoCommandType.Request()
-        request.command_type = command_type
-
-        self.node.get_logger().info(f"Setting MoveIt Servo command type: command_type={command_type}")
-
-        future = self.node.servo_command_type_client.call_async(request)
-        rclpy.spin_until_future_complete(self.node, future, timeout_sec=5.0)
-
-        if not future.done():
-            self.node.get_logger().error("Servo command-type service call timed out")
-            return False
-
-        response = future.result()
-        if response is None:
-            self.node.get_logger().error("Servo command-type service returned no response")
-            return False
-
-        if hasattr(response, "success") and not response.success:
-            self.node.get_logger().error("Servo command-type service rejected request")
-            return False
-
-        self.node.get_logger().info("Servo command type set")
-        return True
-
-    def get_current_tool0_pose(self) -> Optional[PoseStamped]:
+    def get_current_tool0_pose(
+        self,
+        timeout_s: float = 3.0,
+        retry_period_s: float = 0.05,
+    ) -> Optional[PoseStamped]:
         base_frame = self.node.get_parameter("base_frame").value
         tool_frame = self.node.get_parameter("tool_frame").value
 
-        try:
-            tf_base_tool = self.node.tf_buffer.lookup_transform(
-                base_frame,
-                tool_frame,
-                rclpy.time.Time(),
-            )
+        start_s = self.now_s()
+        last_error = None
 
-            pose = PoseStamped()
-            pose.header.frame_id = base_frame
-            pose.header.stamp = self.node.get_clock().now().to_msg()
+        while rclpy.ok() and (self.now_s() - start_s) < timeout_s:
+            try:
+                tf_base_tool = self.node.tf_buffer.lookup_transform(
+                    base_frame,
+                    tool_frame,
+                    rclpy.time.Time(),
+                )
 
-            pose.pose.position.x = tf_base_tool.transform.translation.x
-            pose.pose.position.y = tf_base_tool.transform.translation.y
-            pose.pose.position.z = tf_base_tool.transform.translation.z
-            pose.pose.orientation = tf_base_tool.transform.rotation
+                pose = PoseStamped()
+                pose.header.frame_id = base_frame
+                pose.header.stamp = self.node.get_clock().now().to_msg()
 
-            return pose
+                pose.pose.position.x = tf_base_tool.transform.translation.x
+                pose.pose.position.y = tf_base_tool.transform.translation.y
+                pose.pose.position.z = tf_base_tool.transform.translation.z
+                pose.pose.orientation = tf_base_tool.transform.rotation
 
-        except Exception as exc:
-            self.node.get_logger().warn(f"Could not get current tool0 pose now: {exc}")
-            return None
+                return pose
+
+            except Exception as exc:
+                last_error = exc
+                rclpy.spin_once(self.node, timeout_sec=retry_period_s)
+
+        self.node.get_logger().warn(
+            f"Could not get current {tool_frame} pose in {base_frame} "
+            f"after {timeout_s:.1f}s: {last_error}"
+        )
+        return None
 
     def create_move_goal(self, target_pose: PoseStamped, path_constraints: Optional[Constraints] = None) -> MoveGroup.Goal:
         goal = MoveGroup.Goal()
@@ -391,15 +317,16 @@ class MotionController:
         return self.rotation_matrix_to_quaternion(desired_rotation)
 
     def align_tool_to_ground(self) -> bool:
-        current_pose = self.get_current_tool0_pose()
+        current_pose = self.get_current_tool0_pose(timeout_s=5.0)
+
         if not current_pose: return False
 
         target_pose = copy.deepcopy(current_pose)
         target_pose.pose.orientation = self.make_tool0_z_face_ground_orientation(current_pose.pose.orientation)
         return self.execute_move(target_pose, "Align tool0 to ground")
 
-    def load_zone_poses(self) -> list:
-        csv_file = Path(str(self.node.get_parameter("zone_pose_csv").value))
+    def load_zone_poses(self, csv_file_path: str) -> list:
+        csv_file = Path(csv_file_path)
         poses = []
         with csv_file.open("r") as f:
             reader = csv.DictReader(f)
@@ -421,10 +348,10 @@ class MotionController:
                     "qw": float(normalized["qw"]),
                 })
         return poses
-
-    def move_to_zone(self, pose_name: str, constraint: Optional[str] = None) -> bool:
+    
+    def move_to_zone(self,  pose_name: str, constraint: Optional[str] = None) -> bool:
         try:
-            poses = self.load_zone_poses()
+            poses = self.load_zone_poses(self.node.get_parameter("zone_pose_csv").value)
         except Exception as exc:
             self.node.get_logger().error(f"Could not load zone poses: {exc}")
             return False
@@ -476,167 +403,55 @@ class MotionController:
         time.sleep(1.5)
         return True
 
-    # def project_tool0_to_image(self) -> Optional[Tuple[float, float, float]]:
-    #     target_plane_z_base = float(self.node.get_parameter("target_plane_z_base").value)
-    #     base_frame = self.node.get_parameter("base_frame").value
-    #     tool_frame = self.node.get_parameter("tool_frame").value
-    #     camera_frame = self.node.get_parameter("camera_frame").value
-
-    #     try:
-    #         tf_base_tool = self.node.tf_buffer.lookup_transform(
-    #             base_frame,
-    #             tool_frame,
-    #             rclpy.time.Time(),
-    #             rclpy.time.Time(),
-    #         )
-    #         point_base = PointStamped()
-    #         point_base.header.stamp = self.node.get_clock().now().to_msg()
-    #         point_base.header.frame_id = base_frame
-    #         point_base.point.x = tf_base_tool.transform.translation.x
-    #         point_base.point.y = tf_base_tool.transform.translation.y
-    #         point_base.point.z = target_plane_z_base
-
-    #         tf_cam_base = self.node.tf_buffer.lookup_transform(
-    #             camera_frame,
-    #             base_frame,
-    #             rclpy.time.Time(),
-    #             rclpy.time.Time(),
-    #         )
-    #         point_cam = do_transform_point(point_base, tf_cam_base)
-    #         x = point_cam.point.x
-    #         y = point_cam.point.y
-    #         z = point_cam.point.z
-
-    #         if z <= 0.05:
-    #             self.node.get_logger().warn(f"tool0 projection invalid: z_cam={z:.4f}")
-    #             return None
-
-    #         u = self.node.vision.fx() * x / z + self.node.vision.cx()
-    #         v = self.node.vision.fy() * y / z + self.node.vision.cy()
-
-    #         margin_px = 200.0
-    #         if u < -margin_px or u > 640.0 + margin_px or v < -margin_px or v > 480.0 + margin_px:
-    #             self.node.get_logger().warn(
-    #                 f"tool0 target-plane projection outside usable image: u={u:.1f}, v={v:.1f}, z={z:.4f}"
-    #             )
-    #             return None
-
-    #         return float(u), float(v), float(z)
-    #     except Exception as exc:
-    #         self.node.get_logger().warn(f"Could not project tool0 onto image: {exc}")
-    #         return None
-
-
-    def transform_error_from_base_to_tool_frame(self, x_base, y_base, z_base, stamp):
-        base_frame = self.node.get_parameter("base_frame").value
-        tool_frame = self.node.get_parameter("tool_frame").value
-
-        vec_base = Vector3Stamped()
-        vec_base.header.stamp = stamp
-        vec_base.header.frame_id = base_frame
-        vec_base.vector.x = x_base
-        vec_base.vector.y = y_base
-        vec_base.vector.z = z_base
-
+    # TODO: refactor it
+    def find_closest_zone_pose_to_base_xy(self, target_x_base: float, target_y_base: float):
         try:
-            tf_tool_base = self.node.tf_buffer.lookup_transform(
-                tool_frame,
-                base_frame,
-                rclpy.time.Time(),
-            )
-
-            vec_tool = do_transform_vector3(vec_base, tf_tool_base)
-
-            return (
-                vec_tool.vector.x,
-                vec_tool.vector.y,
-                vec_tool.vector.z,
-            )
-
+            poses = self.load_zone_poses(self.node.get_parameter("zone_pose_csv").value)
         except Exception as exc:
-            self.node.get_logger().warn(
-                f"Could not transform base error to tool frame: {exc}"
-            )
+            self.node.get_logger().error(f"Could not load zone poses: {exc}")
             return None
 
+        if not poses:
+            self.node.get_logger().error("No zone poses found")
+            return None
 
-    def project_tool0_to_image(self) -> Optional[Tuple[float, float, float]]:
         target_plane_z_base = float(
             self.node.get_parameter("target_plane_z_base").value
         )
-        base_frame = self.node.get_parameter("base_frame").value
-        tool_frame = self.node.get_parameter("tool_frame").value
-        camera_frame = self.node.get_parameter("camera_frame").value
 
-        try:
-            tf_base_tool = self.node.tf_buffer.lookup_transform(
-                base_frame,
-                tool_frame,
-                rclpy.time.Time(),
+        best_pose = None
+        best_dist = None
+
+        for pose in poses:
+
+            if pose["name"].startswith("zone"):
+                continue
+
+            dist = math.hypot(
+                pose["x"] - target_x_base,
+                pose["y"] - target_y_base,
             )
 
-            point_base = PointStamped()
-            point_base.header.stamp = self.node.get_clock().now().to_msg()
-            point_base.header.frame_id = base_frame
-            point_base.point.x = tf_base_tool.transform.translation.x
-            point_base.point.y = tf_base_tool.transform.translation.y
-            point_base.point.z = target_plane_z_base
+            if best_dist is None or dist < best_dist:
+                best_dist = dist
+                best_pose = pose
 
-            tf_cam_base = self.node.tf_buffer.lookup_transform(
-                camera_frame,
-                base_frame,
-                rclpy.time.Time(),
-            )
-
-            point_cam = do_transform_point(point_base, tf_cam_base)
-
-            x = point_cam.point.x
-            y = point_cam.point.y
-            z = point_cam.point.z
-
-            if z <= 0.05:
-                self.node.get_logger().warn(f"tool0 projection invalid: z_cam={z:.4f}")
-                return None
-
-            u = self.node.vision.fx() * x / z + self.node.vision.cx()
-            v = self.node.vision.fy() * y / z + self.node.vision.cy()
-
-            margin_px = 200.0
-            if (
-                u < -margin_px
-                or u > 640.0 + margin_px
-                or v < -margin_px
-                or v > 480.0 + margin_px
-            ):
-                self.node.get_logger().warn(
-                    f"tool0 target-plane projection outside usable image: "
-                    f"u={u:.1f}, v={v:.1f}, z={z:.4f}"
-                )
-                return None
-
-            return float(u), float(v), float(z)
-
-        except Exception as exc:
-            self.node.get_logger().warn(f"Could not project tool0 onto image: {exc}")
+        if best_pose is None:
             return None
 
-    # def get_camera_height_depth_estimate(self) -> Optional[float]:
-    #     target_plane_z_base = float(self.node.get_parameter("target_plane_z_base").value)
-    #     base_frame = self.node.get_parameter("base_frame").value
-    #     camera_frame = self.node.get_parameter("camera_frame").value
+        self.node.get_logger().info(
+            f"Closest CSV grid pose to YOLO base XY: "
+            f"name={best_pose['name']}, "
+            f"dist_m={best_dist:.4f}, "
+            f"target_x={target_x_base:.4f}, "
+            f"target_y={target_y_base:.4f}, "
+            f"pose_x={best_pose['x']:.4f}, "
+            f"pose_y={best_pose['y']:.4f}"
+        )
 
-    #     try:
-    #         tf = self.node.tf_buffer.lookup_transform(
-    #             base_frame,
-    #             camera_frame,
-    #             rclpy.time.Time(),
-    #             rclpy.time.Time(),
-    #         )
-    #         camera_z_base = tf.transform.translation.z
-    #         return float(abs(camera_z_base - target_plane_z_base))
-    #     except Exception as exc:
-    #         self.node.get_logger().warn(f"Could not get camera z in base frame: {exc}")
-    #         return None
+        return best_pose
+
+    # TODO: refactor it
     def get_camera_height_depth_estimate(self) -> Optional[float]:
         target_plane_z_base = float(
             self.node.get_parameter("target_plane_z_base").value
@@ -652,118 +467,62 @@ class MotionController:
             )
 
             camera_z_base = tf_base_cam.transform.translation.z
-            return float(abs(camera_z_base - target_plane_z_base))
+            return float(abs(camera_z_base))
 
         except Exception as exc:
             self.node.get_logger().warn(f"Could not get camera z in base frame: {exc}")
             return None
-    def transform_error_to_tool_frame(self, x_cam, y_cam, z_cam, stamp):
-        camera_frame = self.node.get_parameter("camera_frame").value
+    
+    def project_tool0_to_image(self) -> Optional[Tuple[float, float, float]]:
+        target_plane_z_base = float(self.node.get_parameter("target_plane_z_base").value)
+        base_frame = self.node.get_parameter("base_frame").value
         tool_frame = self.node.get_parameter("tool_frame").value
+        camera_frame = self.node.get_parameter("camera_frame").value
 
-        vec_cam = Vector3Stamped()
-        vec_cam.header.stamp = stamp
-        vec_cam.header.frame_id = camera_frame
-        vec_cam.vector.x = x_cam
-        vec_cam.vector.y = y_cam
-        vec_cam.vector.z = z_cam
         try:
-            tf = self.node.tf_buffer.lookup_transform(
+            tf_base_tool = self.node.tf_buffer.lookup_transform(
+                base_frame,
                 tool_frame,
-                camera_frame,
                 rclpy.time.Time(),
-                rclpy.time.Time(),
+                timeout=Duration(seconds=0.05),
             )
-            vec_tool = do_transform_vector3(vec_cam, tf)
-            return vec_tool.vector.x, vec_tool.vector.y, vec_tool.vector.z
+            point_base = PointStamped()
+            point_base.header.stamp = self.node.get_clock().now().to_msg()
+            point_base.header.frame_id = base_frame
+            point_base.point.x = tf_base_tool.transform.translation.x
+            point_base.point.y = tf_base_tool.transform.translation.y
+            point_base.point.z = target_plane_z_base
+
+            tf_cam_base = self.node.tf_buffer.lookup_transform(
+                camera_frame,
+                base_frame,
+                rclpy.time.Time(),
+                timeout=Duration(seconds=0.05),
+            )
+            point_cam = do_transform_point(point_base, tf_cam_base)
+            x = point_cam.point.x
+            y = point_cam.point.y
+            z = point_cam.point.z
+
+            if z <= 0.05:
+                self.node.get_logger().warn(f"tool0 projection invalid: z_cam={z:.4f}")
+                return None
+
+            u = self.node.vision.fx() * x / z + self.node.vision.cx()
+            v = self.node.vision.fy() * y / z + self.node.vision.cy()
+
+            margin_px = 200.0
+            if u < -margin_px or u > 640.0 + margin_px or v < -margin_px or v > 480.0 + margin_px:
+                self.node.get_logger().warn(
+                    f"tool0 target-plane projection outside usable image: u={u:.1f}, v={v:.1f}, z={z:.4f}"
+                )
+                return None
+
+            return float(u), float(v), float(z)
         except Exception as exc:
-            self.node.get_logger().warn(f"Could not transform camera error to tool frame: {exc}")
+            self.node.get_logger().warn(f"Could not project tool0 onto image: {exc}")
             return None
 
-    def publish_servo_twist(
-        self,
-        ex_tool,
-        ey_tool,
-        ez_tool_cmd,
-        ez_tool_observed,
-        error_u_px,
-        error_v_px,
-        depth_m,
-    ):
-        gain = float(self.node.get_parameter("linear_gain").value)
-        max_speed = float(self.node.get_parameter("max_linear_speed").value)
-        vx = self.clamp(gain * ex_tool, -max_speed, max_speed)
-        vy = self.clamp(gain * ey_tool, -max_speed, max_speed)
-        vz = 0.0
-
-        twist = TwistStamped()
-        twist.header.stamp = self.node.get_clock().now().to_msg()
-        twist.header.frame_id = self.node.get_parameter("tool_frame").value
-        twist.twist.linear.x = vx
-        twist.twist.linear.y = vy
-        twist.twist.linear.z = vz
-        twist.twist.angular.x = 0.0
-        twist.twist.angular.y = 0.0
-        twist.twist.angular.z = 0.0
         
-        self.node.target_twist = twist
-        self.node.last_vision_update_s = self.now_s()
-
-        self.node.twist_pub.publish(twist)
-        
-        self.log_servo_command(
-            "tracking",
-            vx, vy, vz,
-            ex_tool, ey_tool, ez_tool_cmd, ez_tool_observed,
-            error_u_px, error_v_px, depth_m,
-        )
-        return vx, vy, vz
-
-    def publish_zero_twist(self, reason="zero"):
-        twist = TwistStamped()
-        twist.header.stamp = self.node.get_clock().now().to_msg()
-        twist.header.frame_id = self.node.get_parameter("tool_frame").value
-        
-        self.node.target_twist = twist
-        self.node.last_vision_update_s = self.now_s()
-        
-        self.node.twist_pub.publish(twist)
-        self.log_servo_command(
-            reason, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0
-        )
-
-    def log_servo_command(
-            self,
-            reason,
-            vx,
-            vy,
-            vz,
-            ex_tool,
-            ey_tool,
-            ez_tool_cmd,
-            ez_tool_observed,
-            error_u_px,
-            error_v_px,
-            depth_m,
-        ):
-            now = self.node.get_clock().now()
-            log_period_s = float(self.node.get_parameter("log_period_s").value)
-            
-            
-            if (now - self.last_log_time).nanoseconds * 1e-9 < log_period_s:
-                return
-                
-            self.last_log_time = now
-            
-            self.node.get_logger().info(
-                f"cmd[{reason}] frame={self.node.get_parameter('tool_frame').value}: linear=({vx:+.4f}, {vy:+.4f}, {vz:+.4f}) m/s, "
-                f"tool_error_xy=({ex_tool:+.4f}, {ey_tool:+.4f}) m, "
-                f"tool_error_z_observed={ez_tool_observed:+.4f} m, tool_error_z_cmd={ez_tool_cmd:+.4f} m, "
-                f"pixel_error=({error_u_px:+.1f}, {error_v_px:+.1f}) px, depth={depth_m:.4f} m, z_control=disabled"
-            )
-
     def now_s(self):
         return self.node.get_clock().now().nanoseconds * 1e-9
-
-    def clamp(self, value, low, high):
-        return max(low, min(high, value))

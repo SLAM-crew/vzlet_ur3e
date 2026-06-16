@@ -19,14 +19,13 @@ install(
 
 install(
   PROGRAMS scripts/pipeline.py
+  scripts/teleop.py
   scripts/pipeline_motion.py
   scripts/pipeline_vision.py
   scripts/pipeline_types.py
   scripts/photo_recorder.py
-  scripts/recorder.py
   DESTINATION lib/${PROJECT_NAME}
 )
-
 
 if(BUILD_TESTING)
   find_package(ament_lint_auto REQUIRED)
