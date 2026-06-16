@@ -83,9 +83,9 @@ class CombinedPoseTeleopCommander(Node):
     def __init__(self, csv_file: str):
         super().__init__("combined_pose_teleop_commander")
 
-        self.declare_parameter("base_frame", "base_link")
+        self.declare_parameter("base_frame", "world")
         self.declare_parameter("tool_frame", "tool0")
-        self.declare_parameter("frame_id", "tool0")
+        self.declare_parameter("frame_id", "world")
 
         self.declare_parameter("move_action", "/move_action")
         self.declare_parameter("group_name", "ur_manipulator")
@@ -93,13 +93,13 @@ class CombinedPoseTeleopCommander(Node):
         self.declare_parameter("pipeline_id", "ompl")
         self.declare_parameter("planning_attempts", 10)
         self.declare_parameter("allowed_planning_time", 5.0)
-        self.declare_parameter("velocity_scaling", 0.1)
-        self.declare_parameter("acceleration_scaling", 0.1)
-        self.declare_parameter("position_tolerance", 0.005)
+        self.declare_parameter("velocity_scaling", 0.2)
+        self.declare_parameter("acceleration_scaling", 0.2)
+        self.declare_parameter("position_tolerance", 0.001)
         self.declare_parameter("orientation_tolerance", 0.01)
 
         self.declare_parameter("servo_topic", "/servo_node/delta_twist_cmds")
-        self.declare_parameter("linear_speed", 0.1)
+        self.declare_parameter("linear_speed", 0.4)
         self.declare_parameter("publish_rate", 30.0)
 
         self.declare_parameter("controller_switch_service", "/controller_manager/switch_controller")
@@ -321,8 +321,12 @@ Teleop mode:
         request.activate_controllers = list(activate_controllers)
         request.deactivate_controllers = list(deactivate_controllers)
 
-        if hasattr(request, "strictness"):
-            request.strictness = 2
+        # BEST_EFFORT:
+        # Do not fail if a controller is already active/inactive.
+        if hasattr(request, "BEST_EFFORT"):
+            request.strictness = request.BEST_EFFORT
+        else:
+            request.strictness = 1
 
         if hasattr(request, "activate_asap"):
             request.activate_asap = True
@@ -335,7 +339,7 @@ Teleop mode:
 
         self.get_logger().info(
             f"{label}: activate={activate_controllers}, "
-            f"deactivate={deactivate_controllers}"
+            f"deactivate={deactivate_controllers}, strictness=BEST_EFFORT"
         )
 
         future = self.switch_controller_client.call_async(request)
@@ -357,30 +361,17 @@ Teleop mode:
         return True
 
     def switch_to_trajectory_mode(self) -> bool:
-        if not self.call_switch_controller(
+        return self.call_switch_controller(
             deactivate_controllers=[self.servo_controller],
-            label=f"deactivate {self.servo_controller}",
-        ):
-            return False
-
-        if not self.call_switch_controller(
             activate_controllers=[self.trajectory_controller],
-            label=f"activate {self.trajectory_controller}",
-        ):
-            return False
-
-        return True
+            label="switch to trajectory controller mode",
+        )
 
     def switch_to_teleop_mode(self) -> bool:
         if not self.call_switch_controller(
             deactivate_controllers=[self.trajectory_controller],
-            label=f"deactivate {self.trajectory_controller}",
-        ):
-            return False
-
-        if not self.call_switch_controller(
             activate_controllers=[self.servo_controller],
-            label=f"activate {self.servo_controller}",
+            label="switch to teleop controller mode",
         ):
             return False
 
@@ -712,13 +703,13 @@ Teleop mode:
                     speed = self.linear_speed
 
                     if key == "w":
-                        self.set_velocity(x=speed)
-                    elif key == "s":
-                        self.set_velocity(x=-speed)
-                    elif key == "a":
                         self.set_velocity(y=speed)
-                    elif key == "d":
+                    elif key == "s":
                         self.set_velocity(y=-speed)
+                    elif key == "a":
+                        self.set_velocity(x=-speed)
+                    elif key == "d":
+                        self.set_velocity(x=speed)
                     elif key == "r":
                         self.set_velocity(z=speed)
                     elif key == "f":

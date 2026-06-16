@@ -31,7 +31,7 @@ class IntegratedPickPipeline(Node):
         super().__init__("pick_pipe")
 
         # Frames / robot config.
-        self.declare_parameter("base_frame", "base_link")
+        self.declare_parameter("base_frame", "world")
         self.declare_parameter("tool_frame", "tool0")
         self.declare_parameter("group_name", "ur_manipulator")
         self.declare_parameter("zone_pose_csv", ZONE_CSV_FILE)
@@ -43,7 +43,7 @@ class IntegratedPickPipeline(Node):
         self.declare_parameter("allowed_planning_time", 5.0)
         self.declare_parameter("velocity_scaling", 0.1)
         self.declare_parameter("acceleration_scaling", 0.1)
-        self.declare_parameter("position_tolerance", 0.005)
+        self.declare_parameter("position_tolerance", 0.001)
         self.declare_parameter("orientation_tolerance", 0.01)
 
         # Collision objects.
@@ -73,16 +73,20 @@ class IntegratedPickPipeline(Node):
         self.declare_parameter("cx", 304.549032)
         self.declare_parameter("cy", 269.791445)
 
+        # self.declare_parameter("fx", 581.804444608261)
+        # self.declare_parameter("fy", 581.5587256061488)
+        # self.declare_parameter("cx", 307.3027114553363)
+        # self.declare_parameter("cy", 267.067489208453)
+
         # Circle detection.
         self.declare_parameter("yolo_model_path", DEFAULT_YOLO_MODEL_FILE)
 
         # Grasp.
         # TODO: tune these parameters and remove hardcoding
-        self.declare_parameter("z_offset", 0.15 + 0.004) #  length from tool0 + cells offset
+        self.declare_parameter("z_offset", 0.15 + 0.004 + 0.02) #  length from tool0 + cells offset
         self.declare_parameter("gripper_close_position", 0.04)
         self.declare_parameter("gripper_open_position", 0.5)
         self.declare_parameter("gripper_max_effort", 0.0)
-        self.declare_parameter("target_plane_z_base", 0.03)
 
 
         self.base_frame = self.get_parameter("base_frame").value
@@ -140,9 +144,8 @@ class IntegratedPickPipeline(Node):
         ("tool alignment", self.motion.align_tool_to_ground),
         ("voted sensor grid pose", self.move_to_voted_sensor_grid_pose),
         ("grasp-pick", lambda: self.motion.execute_grasp_sequence(ACTION_PICK)),
-        # ("final zone pose", lambda: self.motion.move_to_zone(FINAL_ZONE)),
-        # ("voted cell grid pose", self.move_to_voted_cell_grid_pose),
-        # ("grasp-place", lambda: self.motion.execute_grasp_sequence(ACTION_PLACE)),
+        ("final zone pose", lambda: self.motion.move_to_zone(FINAL_ZONE)),
+        ("grasp-place", lambda: self.motion.execute_grasp_sequence(ACTION_PLACE)),
     ]
 
         for name, fn in stages:

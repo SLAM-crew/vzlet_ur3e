@@ -3,6 +3,7 @@ import math
 from pathlib import Path
 from typing import Optional, Tuple
 
+from rclpy.duration import Duration
 from datetime import datetime
 import cv2
 import numpy as np
@@ -25,6 +26,20 @@ class VisionProcessor:
         self.latest_bgr = None
         self.latest_image_seq = 0
         self.latest_image_header = None
+
+        self.K = np.array([
+            [581.804444608261, 0.0, 307.3027114553363],
+            [0.0, 581.5587256061488, 267.067489208453],
+            [0.0, 0.0, 1.0]
+        ], dtype=np.float64)
+
+        self.D = np.array([
+            0.14193836041770494,
+            -0.14988864561584977,
+            0.008163330806507066,
+            -0.004386871315108239,
+            0.0
+        ], dtype=np.float64)
 
     def now_s(self):
         return self.node.get_clock().now().nanoseconds * 1e-9
@@ -57,17 +72,160 @@ class VisionProcessor:
         return int(box.cls.item()) if getattr(box, "cls", None) is not None else -1
     
 
+    # def undistort_raw_pixel_to_normalized_ray(self, u: float, v: float):
+    #     pixel = np.array([[[u, v]]], dtype=np.float64)
+
+    #     undistorted = cv2.undistortPoints(
+    #         pixel,
+    #         self.K,
+    #         self.D,
+    #         R=None,
+    #         P=None
+    #     )
+
+    #     x_norm = float(undistorted[0, 0, 0])
+    #     y_norm = float(undistorted[0, 0, 1])
+
+    #     return x_norm, y_norm
+
+
+    def project_tool0_to_image(self) -> Optional[Tuple[float, float, float]]:
+        base_frame = self.node.get_parameter("base_frame").value
+        tool_frame = self.node.get_parameter("tool_frame").value
+        camera_frame = self.node.get_parameter("camera_frame").value
+
+        try:
+            tf_base_tool = self.node.tf_buffer.lookup_transform(
+                base_frame,
+                tool_frame,
+                rclpy.time.Time(),
+                timeout=Duration(seconds=0.05),
+            )
+            point_base = PointStamped()
+            point_base.header.stamp = self.node.get_clock().now().to_msg()
+            point_base.header.frame_id = base_frame
+            point_base.point.x = tf_base_tool.transform.translation.x
+            point_base.point.y = tf_base_tool.transform.translation.y
+            # TODO
+            point_base.point.z = 0.01
+
+            tf_cam_base = self.node.tf_buffer.lookup_transform(
+                camera_frame,
+                base_frame,
+                rclpy.time.Time(),
+                timeout=Duration(seconds=0.05),
+            )
+            point_cam = do_transform_point(point_base, tf_cam_base)
+            x = point_cam.point.x
+            y = point_cam.point.y
+            z = point_cam.point.z
+
+            if z <= 0.05:
+                self.node.get_logger().warn(f"tool0 projection invalid: z_cam={z:.4f}")
+                return None
+
+            u = self.cam_param("fx") * x / z + self.cam_param("cx")
+            v = self.cam_param("fy") * y / z + self.cam_param("cy")
+
+            # point_3d = np.array([[[x, y, z]]], dtype=np.float64)
+
+            # image_points, _ = cv2.projectPoints(
+            #     point_3d,
+            #     np.zeros((3, 1), dtype=np.float64),
+            #     np.zeros((3, 1), dtype=np.float64),
+            #     self.K,
+            #     self.D
+            # )
+
+            # u = float(image_points[0, 0, 0])
+            # v = float(image_points[0, 0, 1])
+
+            margin_px = 200.0
+            if u < -margin_px or u > 640.0 + margin_px or v < -margin_px or v > 480.0 + margin_px:
+                self.node.get_logger().warn(
+                    f"tool0 target-plane projection outside usable image: u={u:.1f}, v={v:.1f}, z={z:.4f}"
+                )
+                return None
+
+            return float(u), float(v), float(z)
+        except Exception as exc:
+            self.node.get_logger().warn(f"Could not project tool0 onto image: {exc}")
+            return None
+    
+    # TODO: refactor it
+    def find_closest_zone_pose_to_base_xy(self, target_x_base: float, target_y_base: float):
+        try:
+            poses = self.node.motion.load_zone_poses(self.node.get_parameter("zone_pose_csv").value)
+        except Exception as exc:
+            self.node.get_logger().error(f"Could not load zone poses: {exc}")
+            return None
+
+        if not poses:
+            self.node.get_logger().error("No zone poses found")
+            return None
+
+        best_pose = None
+        best_dist = None
+
+        for pose in poses:
+
+            if pose["name"].startswith("zone"):
+                continue
+
+            dist = math.hypot(
+                pose["x"] - target_x_base,
+                pose["y"] - target_y_base,
+            )
+
+            if best_dist is None or dist < best_dist:
+                best_dist = dist
+                best_pose = pose
+
+        if best_pose is None:
+            return None
+
+        self.node.get_logger().info(
+            f"Closest CSV grid pose to bbox center: "
+            f"name={best_pose['name']}, "
+            f"dist_m={best_dist:.4f}, "
+            f"target_x={target_x_base:.4f}, "
+            f"target_y={target_y_base:.4f}, "
+            f"pose_x={best_pose['x']:.4f}, "
+            f"pose_y={best_pose['y']:.4f}"
+        )
+
+        return best_pose
+
+    # TODO: refactor it
+    def get_camera_height_depth_estimate(self) -> Optional[float]:
+        base_frame = self.node.get_parameter("base_frame").value
+        camera_frame = self.node.get_parameter("camera_frame").value
+
+        try:
+            tf_base_cam = self.node.tf_buffer.lookup_transform(
+                base_frame,
+                camera_frame,
+                rclpy.time.Time(),
+            )
+
+            camera_z_base = tf_base_cam.transform.translation.z
+            return float(abs(camera_z_base))
+
+        except Exception as exc:
+            self.node.get_logger().warn(f"Could not get camera z in base frame: {exc}")
+            return None
+
     # TODO: refactor it
     def pixel_to_base_parallel_camera(self, u: float, v: float):
         base_frame = self.node.get_parameter("base_frame").value
         camera_frame = self.node.get_parameter("camera_frame").value
 
-        fx = self.fx()
-        fy = self.fy()
-        cx = self.cx()
-        cy = self.cy()
+        fx = self.cam_param("fx")
+        fy = self.cam_param("fy")
+        cx = self.cam_param("cx")
+        cy = self.cam_param("cy")
 
-        depth_m = self.node.motion.get_camera_height_depth_estimate()
+        depth_m = self.get_camera_height_depth_estimate()
 
         self.node.get_logger().info(
             f"YOLO pixel-to-base input: "
@@ -91,7 +249,12 @@ class VisionProcessor:
             target_cam.point.y = (v - cy) * depth_m / fy
             target_cam.point.z = depth_m
 
-            # Camera frame -> base_link
+            # x_norm, y_norm = self.undistort_raw_pixel_to_normalized_ray(u, v)
+            # target_cam.point.x = x_norm * depth_m
+            # target_cam.point.y = y_norm * depth_m
+            # target_cam.point.z = depth_m
+
+            # Camera frame -> base_frame
             tf_base_cam = self.node.tf_buffer.lookup_transform(
                 base_frame,
                 camera_frame,
@@ -99,11 +262,6 @@ class VisionProcessor:
             )
             self.node.get_logger().info(f"target_cam: {target_cam}")
             target_base = do_transform_point(target_cam, tf_base_cam)
-
-            # Object is assumed to lie on the known target plane
-            target_base.point.z = float(
-                self.node.get_parameter("target_plane_z_base").value
-            )
 
             return target_base
 
@@ -175,8 +333,6 @@ class VisionProcessor:
             if candidate["conf"] > min_conf
         ]
 
-
-    # TODO: refactor it
     def _match_candidates_to_reference(
         self,
         reference_candidates,
@@ -210,7 +366,6 @@ class VisionProcessor:
 
         return matched
 
-    # TODO: refactor it
     def _average_candidate_votes(self, candidate_votes):
         averaged = []
 
@@ -236,12 +391,13 @@ class VisionProcessor:
 
 
     def _draw_vote_debug_image(
-    self,
-    bgr: np.ndarray,
-    candidates,
-    target_class_name: str,
-    vote_index: int,
-    vote_frames: int,
+        self,
+        bgr: np.ndarray,
+        candidates,
+        target_class_name: str,
+        vote_index: int,
+        vote_frames: int,
+        tool_projection=None,
     ):
         image = bgr.copy()
 
@@ -250,19 +406,32 @@ class VisionProcessor:
             conf = candidate["conf"]
             class_name = candidate.get("class_name", target_class_name)
 
+            is_selected = bool(candidate.get("selected", False))
+
+            if is_selected:
+                box_color = (255, 0, 255)      # magenta selected bbox
+                text_color = (255, 0, 255)
+                thickness = 3
+                label_prefix = "SELECTED "
+            else:
+                box_color = (0, 255, 0)        # green normal bbox
+                text_color = (0, 255, 0)
+                thickness = 2
+                label_prefix = ""
+
             p1 = (int(round(x1)), int(round(y1)))
             p2 = (int(round(x2)), int(round(y2)))
 
-            cv2.rectangle(image, p1, p2, (0, 255, 0), 2)
+            cv2.rectangle(image, p1, p2, box_color, thickness)
 
-            label = f"{class_name} {conf:.2f}"
+            label = f"{label_prefix}{class_name} {conf:.2f}"
             cv2.putText(
                 image,
                 label,
                 (p1[0], max(20, p1[1] - 6)),
                 cv2.FONT_HERSHEY_SIMPLEX,
                 0.55,
-                (0, 255, 0),
+                text_color,
                 2,
                 cv2.LINE_AA,
             )
@@ -271,13 +440,41 @@ class VisionProcessor:
                 int(round(candidate["center_u"])),
                 int(round(candidate["center_v"])),
             )
+
             cv2.drawMarker(
                 image,
                 center,
-                (0, 0, 255),
+                (0, 0, 255),                  # red candidate center
                 markerType=cv2.MARKER_CROSS,
                 markerSize=12,
                 thickness=2,
+            )
+
+        if tool_projection is not None:
+            tool0_u, tool0_v, tool0_z_cam = tool_projection
+            tool_px = (
+                int(round(tool0_u)),
+                int(round(tool0_v)),
+            )
+
+            cv2.drawMarker(
+                image,
+                tool_px,
+                (255, 0, 0),                  # blue tool0 projection
+                markerType=cv2.MARKER_CROSS,
+                markerSize=26,
+                thickness=3,
+            )
+
+            cv2.putText(
+                image,
+                f"tool0 projection u={tool0_u:.1f}, v={tool0_v:.1f}, z={tool0_z_cam:.3f}",
+                (tool_px[0] + 8, tool_px[1] - 8),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.5,
+                (255, 0, 0),
+                2,
+                cv2.LINE_AA,
             )
 
         status = (
@@ -295,6 +492,11 @@ class VisionProcessor:
             2,
             cv2.LINE_AA,
         )
+
+        image = self.draw_known_pose_labels(
+            image,
+            pose_names=("04", "24"),
+            )
 
         return image
 
@@ -317,9 +519,9 @@ class VisionProcessor:
 
     # TODO: refactor it
     def get_stable_yolo_candidates(
-    self,
-    target_class_name: str,
-    ):
+        self,
+        target_class_name: str,
+        ):
         vote_frames = int(self.node.get_parameter("yolo_vote_frames").value)
         max_center_dist_px = float(
             self.node.get_parameter("yolo_vote_max_center_dist_px").value
@@ -356,7 +558,7 @@ class VisionProcessor:
                     f"YOLO vote failed: timeout waiting for frame "
                     f"{frame_number}/{vote_frames}"
                 )
-                return None
+                return None, None
 
             candidates = self._detect_yolo_candidates(
                 bgr=bgr,
@@ -365,7 +567,20 @@ class VisionProcessor:
             )
 
             if candidates is None:
-                return None
+                return None, None
+
+            tool_projection = self.project_tool0_to_image()
+
+            for candidate in candidates:
+                candidate["selected"] = False
+
+            selected_candidate = self._select_nearest_to_tool(
+                candidates,
+                tool_projection,
+            )
+
+            if selected_candidate is not None:
+                selected_candidate["selected"] = True
 
             debug_image = self._draw_vote_debug_image(
                 bgr=bgr,
@@ -373,6 +588,7 @@ class VisionProcessor:
                 target_class_name=target_class_name,
                 vote_index=frame_number,
                 vote_frames=vote_frames,
+                tool_projection=tool_projection,
             )
 
             self._save_vote_debug_image(debug_image, run_dir, frame_number)
@@ -388,7 +604,7 @@ class VisionProcessor:
                     f"YOLO vote failed: no '{target_class_name}' candidates in frame "
                     f"{frame_number}/{vote_frames}"
                 )
-                return None
+                return None, None
 
             if vote_index == 0:
                 candidate_votes.append(candidates)
@@ -408,7 +624,7 @@ class VisionProcessor:
                     f"reference={[(round(c['center_u'], 1), round(c['center_v'], 1), round(c['conf'], 3)) for c in candidate_votes[0]]}, "
                     f"current={[(round(c['center_u'], 1), round(c['center_v'], 1), round(c['conf'], 3)) for c in candidates]}"
                 )
-                return None
+                return None, None
 
             candidate_votes.append(matched)
 
@@ -420,24 +636,31 @@ class VisionProcessor:
             f"debug_dir={run_dir}"
         )
 
-        return averaged_candidates
+        return averaged_candidates, tool_projection
 
     # TODO: refactor it
+    # TODO: handle case in absence of any sensor in the camera frame 
     def select_yolo_grid_pose(
         self,
         target_class_name: str,
     ):
-        candidates = self.get_stable_yolo_candidates(target_class_name)
+        candidates, tool_projection = self.get_stable_yolo_candidates(target_class_name)
 
         if not candidates:
             return None
 
-        tool_projection = self.node.motion.project_tool0_to_image()
+        for candidate in candidates:
+            candidate["selected"] = False
 
         selected_candidate = self._select_nearest_to_tool(
             candidates,
             tool_projection,
         )
+
+        if selected_candidate is None:
+            self.node.get_logger().error("No YOLO candidate could be selected")
+            return None
+        
         selected_candidate["selected"] = True
         self._last_yolo_debug_boxes = candidates
 
@@ -448,11 +671,11 @@ class VisionProcessor:
 
         if target_base is None:
             self.node.get_logger().error(
-                "Could not convert selected YOLO pixel to base_link XY"
+                "Could not convert selected YOLO pixel to base_frame XY"
             )
             return None
 
-        pose = self.node.motion.find_closest_zone_pose_to_base_xy(
+        pose = self.find_closest_zone_pose_to_base_xy(
             target_base.point.x,
             target_base.point.y,
         )
@@ -464,7 +687,7 @@ class VisionProcessor:
             return None
 
         self.node.get_logger().info(
-            f"Selected YOLO {target_class_name}: "
+            f"Selected class {target_class_name}: "
             f"u={selected_candidate['center_u']:.1f}, "
             f"v={selected_candidate['center_v']:.1f}, "
             f"base_x={target_base.point.x:.4f}, "
@@ -526,9 +749,6 @@ class VisionProcessor:
 
 
     def _select_nearest_to_tool(self, candidates, tool_projection):
-        if tool_projection is None:
-            return self._select_highest_confidence(candidates)
-
         tool0_u, tool0_v, _tool0_z_cam = tool_projection
 
         return min(
@@ -561,15 +781,95 @@ class VisionProcessor:
             self.node.get_logger().error(f"Could not load YOLO model {model_path}: {exc}")
             return None
 
-    # TODO: refactor it
-    def fx(self):
-        return float(self.node.get_parameter("fx").value)
+    def cam_param(self, name: str) -> float:
+        # choose between fx / fy / cx / cy 
+        return float(self.node.get_parameter(name).value)
+    
+    def base_point_to_pixel_manual(self, x_base: float, y_base: float, z_base: float):
+        base_frame = self.node.get_parameter("base_frame").value
+        camera_frame = self.node.get_parameter("camera_frame").value
 
-    def fy(self):
-        return float(self.node.get_parameter("fy").value)
+        fx = self.cam_param("fx")
+        fy = self.cam_param("fy")
+        cx = self.cam_param("cx")
+        cy = self.cam_param("cy")
 
-    def cx(self):
-        return float(self.node.get_parameter("cx").value)
+        point_base = PointStamped()
+        point_base.header.frame_id = base_frame
+        point_base.header.stamp = self.node.get_clock().now().to_msg()
+        point_base.point.x = float(x_base)
+        point_base.point.y = float(y_base)
+        point_base.point.z = float(z_base)
 
-    def cy(self):
-        return float(self.node.get_parameter("cy").value)
+        tf_cam_base = self.node.tf_buffer.lookup_transform(
+            camera_frame,
+            base_frame,
+            rclpy.time.Time(),
+            timeout=Duration(seconds=0.05),
+        )
+
+        point_cam = do_transform_point(point_base, tf_cam_base)
+
+        X = point_cam.point.x
+        Y = point_cam.point.y
+        Z = point_cam.point.z
+
+        if Z <= 0.0:
+            return None
+
+        u = fx * X / Z + cx
+        v = fy * Y / Z + cy
+
+        return float(u), float(v), float(Z)
+    
+    def draw_known_pose_labels(self, image, pose_names=("02", "12")):
+        try:
+            poses = self.node.motion.load_zone_poses(
+                self.node.get_parameter("zone_pose_csv").value
+            )
+        except Exception as exc:
+            self.node.get_logger().warn(f"Could not load zone poses for debug draw: {exc}")
+            return image
+
+        out = image.copy()
+
+        for pose in poses:
+            name = str(pose["name"])
+
+            if name not in pose_names:
+                continue
+
+            result = self.base_point_to_pixel_manual(
+                pose["x"],
+                pose["y"],
+                0.02,
+            )
+
+            if result is None:
+                continue
+
+            u, v, z_cam = result
+
+            px = (int(round(u)), int(round(v)))
+
+            cv2.drawMarker(
+                out,
+                px,
+                (0, 255, 255),
+                markerType=cv2.MARKER_CROSS,
+                markerSize=24,
+                thickness=2,
+            )
+
+            cv2.putText(
+                out,
+                f"{name} z={z_cam:.3f}",
+                (px[0] + 8, px[1] - 8),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.6,
+                (0, 255, 255),
+                2,
+                cv2.LINE_AA,
+            )
+
+        return out

@@ -3,16 +3,14 @@ import csv
 import math
 import time
 from pathlib import Path
-from typing import Optional, Tuple
+from typing import Optional
 
 import numpy as np
 import rclpy
-from rclpy.duration import Duration
 from action_msgs.msg import GoalStatus
 from control_msgs.action import ParallelGripperCommand
 from geometry_msgs.msg import (
     PoseStamped,
-    PointStamped,
     Quaternion,
 
 )
@@ -25,7 +23,6 @@ from moveit_msgs.msg import (
     PositionConstraint,
 )
 from shape_msgs.msg import SolidPrimitive
-from tf2_geometry_msgs import do_transform_point
 
 from pipeline_types import ACTION_PICK, ACTION_PLACE
 
@@ -402,127 +399,6 @@ class MotionController:
         
         time.sleep(1.5)
         return True
-
-    # TODO: refactor it
-    def find_closest_zone_pose_to_base_xy(self, target_x_base: float, target_y_base: float):
-        try:
-            poses = self.load_zone_poses(self.node.get_parameter("zone_pose_csv").value)
-        except Exception as exc:
-            self.node.get_logger().error(f"Could not load zone poses: {exc}")
-            return None
-
-        if not poses:
-            self.node.get_logger().error("No zone poses found")
-            return None
-
-        target_plane_z_base = float(
-            self.node.get_parameter("target_plane_z_base").value
-        )
-
-        best_pose = None
-        best_dist = None
-
-        for pose in poses:
-
-            if pose["name"].startswith("zone"):
-                continue
-
-            dist = math.hypot(
-                pose["x"] - target_x_base,
-                pose["y"] - target_y_base,
-            )
-
-            if best_dist is None or dist < best_dist:
-                best_dist = dist
-                best_pose = pose
-
-        if best_pose is None:
-            return None
-
-        self.node.get_logger().info(
-            f"Closest CSV grid pose to YOLO base XY: "
-            f"name={best_pose['name']}, "
-            f"dist_m={best_dist:.4f}, "
-            f"target_x={target_x_base:.4f}, "
-            f"target_y={target_y_base:.4f}, "
-            f"pose_x={best_pose['x']:.4f}, "
-            f"pose_y={best_pose['y']:.4f}"
-        )
-
-        return best_pose
-
-    # TODO: refactor it
-    def get_camera_height_depth_estimate(self) -> Optional[float]:
-        target_plane_z_base = float(
-            self.node.get_parameter("target_plane_z_base").value
-        )
-        base_frame = self.node.get_parameter("base_frame").value
-        camera_frame = self.node.get_parameter("camera_frame").value
-
-        try:
-            tf_base_cam = self.node.tf_buffer.lookup_transform(
-                base_frame,
-                camera_frame,
-                rclpy.time.Time(),
-            )
-
-            camera_z_base = tf_base_cam.transform.translation.z
-            return float(abs(camera_z_base))
-
-        except Exception as exc:
-            self.node.get_logger().warn(f"Could not get camera z in base frame: {exc}")
-            return None
     
-    def project_tool0_to_image(self) -> Optional[Tuple[float, float, float]]:
-        target_plane_z_base = float(self.node.get_parameter("target_plane_z_base").value)
-        base_frame = self.node.get_parameter("base_frame").value
-        tool_frame = self.node.get_parameter("tool_frame").value
-        camera_frame = self.node.get_parameter("camera_frame").value
-
-        try:
-            tf_base_tool = self.node.tf_buffer.lookup_transform(
-                base_frame,
-                tool_frame,
-                rclpy.time.Time(),
-                timeout=Duration(seconds=0.05),
-            )
-            point_base = PointStamped()
-            point_base.header.stamp = self.node.get_clock().now().to_msg()
-            point_base.header.frame_id = base_frame
-            point_base.point.x = tf_base_tool.transform.translation.x
-            point_base.point.y = tf_base_tool.transform.translation.y
-            point_base.point.z = target_plane_z_base
-
-            tf_cam_base = self.node.tf_buffer.lookup_transform(
-                camera_frame,
-                base_frame,
-                rclpy.time.Time(),
-                timeout=Duration(seconds=0.05),
-            )
-            point_cam = do_transform_point(point_base, tf_cam_base)
-            x = point_cam.point.x
-            y = point_cam.point.y
-            z = point_cam.point.z
-
-            if z <= 0.05:
-                self.node.get_logger().warn(f"tool0 projection invalid: z_cam={z:.4f}")
-                return None
-
-            u = self.node.vision.fx() * x / z + self.node.vision.cx()
-            v = self.node.vision.fy() * y / z + self.node.vision.cy()
-
-            margin_px = 200.0
-            if u < -margin_px or u > 640.0 + margin_px or v < -margin_px or v > 480.0 + margin_px:
-                self.node.get_logger().warn(
-                    f"tool0 target-plane projection outside usable image: u={u:.1f}, v={v:.1f}, z={z:.4f}"
-                )
-                return None
-
-            return float(u), float(v), float(z)
-        except Exception as exc:
-            self.node.get_logger().warn(f"Could not project tool0 onto image: {exc}")
-            return None
-
-        
     def now_s(self):
         return self.node.get_clock().now().nanoseconds * 1e-9

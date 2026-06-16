@@ -72,7 +72,8 @@
     safety_pos_margin="$(arg safety_pos_margin)"
     safety_k_position="$(arg safety_k_position)"
     >
-     <origin xyz="0 0 0" rpy="0 0 0" />          <!-- position robot in the world -->
+     <!-- <origin xyz="0 0 0" rpy="0 0 0" />          position robot in the world -->
+     <origin xyz="0 0 0" rpy="0 0 0.170439" />
   </xacro:ur_robot>
 
   <!-- ros2 control instance -->
@@ -112,7 +113,8 @@
   <xacro:include filename="$(find realsense2_description)/urdf/_d435.urdf.xacro" />
 
   <xacro:sensor_d435 parent="tool0" use_nominal_extrinsics="$(arg use_nominal_extrinsics)" add_plug="$(arg add_plug)" use_mesh="$(arg use_mesh)">
+    <!-- TODO: ask vitya for URDF -->
     <!-- <origin xyz="0.03 0 0.015" rpy="0 -1.57 3.14"/> -->
-    <origin xyz="0.03 0 0.01" rpy="0 -1.57 3.14"/>
+    <origin xyz="0.0212132 -0.0212132 0.01" rpy="0 -1.57  2.355"/>
   </xacro:sensor_d435>
 </robot>
