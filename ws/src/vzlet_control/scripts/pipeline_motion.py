@@ -40,10 +40,10 @@ class MotionController:
         base_frame = self.node.get_parameter("base_frame").value
         tool_frame = self.node.get_parameter("tool_frame").value
 
-        start_s = self.now_s()
+        start_s = self.node.now_s()
         last_error = None
 
-        while rclpy.ok() and (self.now_s() - start_s) < timeout_s:
+        while rclpy.ok() and (self.node.now_s() - start_s) < timeout_s:
             try:
                 tf_base_tool = self.node.tf_buffer.lookup_transform(
                     base_frame,
@@ -399,6 +399,4 @@ class MotionController:
         
         time.sleep(1.5)
         return True
-    
-    def now_s(self):
-        return self.node.get_clock().now().nanoseconds * 1e-9
+

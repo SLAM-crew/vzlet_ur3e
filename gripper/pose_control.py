@@ -9,7 +9,7 @@ import time
 
 def main():
     # Define your servo configuration
-    servo_ids = [1, 2]  # Adjust to match your servo IDs
+    servo_ids = [1]  # Adjust to match your servo IDs
     servo_type = "sts"     # Change to "sts" for STS servos
     
     controller = ServoController(servo_ids=servo_ids, servo_type=servo_type)
@@ -30,8 +30,8 @@ def main():
         print("Moving motors one by one...")
         
         positions_sequence = [
-            {1: 1784, 2: 2260},           # All to ~middle
-            {1: 1360, 2: 2626},        # Motor 1 to middle
+            {1: 3100},
+            {1: 2048},
         ]
         
         for i, positions in enumerate(positions_sequence):

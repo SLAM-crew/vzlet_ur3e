@@ -41,7 +41,7 @@ class IntegratedPickPipeline(Node):
         self.declare_parameter("pipeline_id", "ompl")
         self.declare_parameter("planning_attempts", 10)
         self.declare_parameter("allowed_planning_time", 5.0)
-        self.declare_parameter("velocity_scaling", 0.1)
+        self.declare_parameter("velocity_scaling", 0.5)
         self.declare_parameter("acceleration_scaling", 0.1)
         self.declare_parameter("position_tolerance", 0.001)
         self.declare_parameter("orientation_tolerance", 0.01)
@@ -63,20 +63,10 @@ class IntegratedPickPipeline(Node):
         self.declare_parameter("yolo_vote_debug_dir", "vote_detect")
 
         # D435 color camera intrinsics.
-        # self.declare_parameter("fx", 609.5712890625)
-        # self.declare_parameter("fy", 608.7792358398438)
-        # self.declare_parameter("cx", 318.21075439453125)
-        # self.declare_parameter("cy", 243.92738342285156)
-
         self.declare_parameter("fx", 602.873352)
         self.declare_parameter("fy", 600.606750)
         self.declare_parameter("cx", 304.549032)
         self.declare_parameter("cy", 269.791445)
-
-        # self.declare_parameter("fx", 581.804444608261)
-        # self.declare_parameter("fy", 581.5587256061488)
-        # self.declare_parameter("cx", 307.3027114553363)
-        # self.declare_parameter("cy", 267.067489208453)
 
         # Circle detection.
         self.declare_parameter("yolo_model_path", DEFAULT_YOLO_MODEL_FILE)
@@ -87,7 +77,6 @@ class IntegratedPickPipeline(Node):
         self.declare_parameter("gripper_close_position", 0.04)
         self.declare_parameter("gripper_open_position", 0.5)
         self.declare_parameter("gripper_max_effort", 0.0)
-
 
         self.base_frame = self.get_parameter("base_frame").value
         self.tool_frame = self.get_parameter("tool_frame").value
@@ -118,7 +107,6 @@ class IntegratedPickPipeline(Node):
             10,
         )
   
-    # TODO: move to another file
     def move_to_voted_sensor_grid_pose(self) -> bool:
         pose_name = self.vision.select_yolo_grid_pose(
             target_class_name="sensor",
@@ -160,7 +148,6 @@ class IntegratedPickPipeline(Node):
         self.get_logger().info("Pipeline complete")
         return True
 
-    # TODO: move to another file
     def publish_ground_plane(self):
         scene = PlanningScene()
         scene.is_diff = True
@@ -187,6 +174,9 @@ class IntegratedPickPipeline(Node):
         self.scene_pub.publish(scene)
         self.get_logger().info("Ground plane added")
         time.sleep(1.0)
+    
+    def now_s(self):
+        return self.get_clock().now().nanoseconds * 1e-9
 
 def main():
     rclpy.init()

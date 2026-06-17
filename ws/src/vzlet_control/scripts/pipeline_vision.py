@@ -16,33 +16,14 @@ from pipeline_types import (
     DEFAULT_YOLO_MODEL_FILE,
 )
 
-
 class VisionProcessor:
     def __init__(self, node):
         self.node = node
         self._yolo_model = None
-        self.yolo_target_class: Optional[str] = None
         self._last_yolo_debug_boxes = []
         self.latest_bgr = None
         self.latest_image_seq = 0
         self.latest_image_header = None
-
-        self.K = np.array([
-            [581.804444608261, 0.0, 307.3027114553363],
-            [0.0, 581.5587256061488, 267.067489208453],
-            [0.0, 0.0, 1.0]
-        ], dtype=np.float64)
-
-        self.D = np.array([
-            0.14193836041770494,
-            -0.14988864561584977,
-            0.008163330806507066,
-            -0.004386871315108239,
-            0.0
-        ], dtype=np.float64)
-
-    def now_s(self):
-        return self.node.get_clock().now().nanoseconds * 1e-9
 
     def load_yolo(self) -> Optional[type]:
         try:
@@ -71,24 +52,6 @@ class VisionProcessor:
     def _box_cls_id(self, box) -> int:
         return int(box.cls.item()) if getattr(box, "cls", None) is not None else -1
     
-
-    # def undistort_raw_pixel_to_normalized_ray(self, u: float, v: float):
-    #     pixel = np.array([[[u, v]]], dtype=np.float64)
-
-    #     undistorted = cv2.undistortPoints(
-    #         pixel,
-    #         self.K,
-    #         self.D,
-    #         R=None,
-    #         P=None
-    #     )
-
-    #     x_norm = float(undistorted[0, 0, 0])
-    #     y_norm = float(undistorted[0, 0, 1])
-
-    #     return x_norm, y_norm
-
-
     def project_tool0_to_image(self) -> Optional[Tuple[float, float, float]]:
         base_frame = self.node.get_parameter("base_frame").value
         tool_frame = self.node.get_parameter("tool_frame").value
@@ -127,19 +90,6 @@ class VisionProcessor:
             u = self.cam_param("fx") * x / z + self.cam_param("cx")
             v = self.cam_param("fy") * y / z + self.cam_param("cy")
 
-            # point_3d = np.array([[[x, y, z]]], dtype=np.float64)
-
-            # image_points, _ = cv2.projectPoints(
-            #     point_3d,
-            #     np.zeros((3, 1), dtype=np.float64),
-            #     np.zeros((3, 1), dtype=np.float64),
-            #     self.K,
-            #     self.D
-            # )
-
-            # u = float(image_points[0, 0, 0])
-            # v = float(image_points[0, 0, 1])
-
             margin_px = 200.0
             if u < -margin_px or u > 640.0 + margin_px or v < -margin_px or v > 480.0 + margin_px:
                 self.node.get_logger().warn(
@@ -152,7 +102,6 @@ class VisionProcessor:
             self.node.get_logger().warn(f"Could not project tool0 onto image: {exc}")
             return None
     
-    # TODO: refactor it
     def find_closest_zone_pose_to_base_xy(self, target_x_base: float, target_y_base: float):
         try:
             poses = self.node.motion.load_zone_poses(self.node.get_parameter("zone_pose_csv").value)
@@ -196,7 +145,6 @@ class VisionProcessor:
 
         return best_pose
 
-    # TODO: refactor it
     def get_camera_height_depth_estimate(self) -> Optional[float]:
         base_frame = self.node.get_parameter("base_frame").value
         camera_frame = self.node.get_parameter("camera_frame").value
@@ -215,7 +163,6 @@ class VisionProcessor:
             self.node.get_logger().warn(f"Could not get camera z in base frame: {exc}")
             return None
 
-    # TODO: refactor it
     def pixel_to_base_parallel_camera(self, u: float, v: float):
         base_frame = self.node.get_parameter("base_frame").value
         camera_frame = self.node.get_parameter("camera_frame").value
@@ -240,7 +187,6 @@ class VisionProcessor:
             return None
 
         try:
-            # Pixel -> metric point in camera optical frame
             target_cam = PointStamped()
             target_cam.header.frame_id = camera_frame
             target_cam.header.stamp = self.node.get_clock().now().to_msg()
@@ -249,12 +195,6 @@ class VisionProcessor:
             target_cam.point.y = (v - cy) * depth_m / fy
             target_cam.point.z = depth_m
 
-            # x_norm, y_norm = self.undistort_raw_pixel_to_normalized_ray(u, v)
-            # target_cam.point.x = x_norm * depth_m
-            # target_cam.point.y = y_norm * depth_m
-            # target_cam.point.z = depth_m
-
-            # Camera frame -> base_frame
             tf_base_cam = self.node.tf_buffer.lookup_transform(
                 base_frame,
                 camera_frame,
@@ -271,10 +211,8 @@ class VisionProcessor:
             )
             return None
 
-
-
     def _get_next_bgr_frame(self, last_seq: int, timeout_s: float):
-        start_s = self.now_s()
+        start_s = self.node.now_s()
 
         while rclpy.ok():
             rclpy.spin_once(self.node, timeout_sec=0.05)
@@ -286,11 +224,10 @@ class VisionProcessor:
                     self.latest_image_header,
                 )
 
-            if (self.now_s() - start_s) > timeout_s:
+            if (self.node.now_s() - start_s) > timeout_s:
                 return None, last_seq, None
 
         return None, last_seq, None
-
 
     def _detect_yolo_candidates(
         self,
@@ -409,12 +346,12 @@ class VisionProcessor:
             is_selected = bool(candidate.get("selected", False))
 
             if is_selected:
-                box_color = (255, 0, 255)      # magenta selected bbox
+                box_color = (255, 0, 255)
                 text_color = (255, 0, 255)
                 thickness = 3
                 label_prefix = "SELECTED "
             else:
-                box_color = (0, 255, 0)        # green normal bbox
+                box_color = (0, 255, 0)
                 text_color = (0, 255, 0)
                 thickness = 2
                 label_prefix = ""
@@ -444,7 +381,7 @@ class VisionProcessor:
             cv2.drawMarker(
                 image,
                 center,
-                (0, 0, 255),                  # red candidate center
+                (0, 0, 255),
                 markerType=cv2.MARKER_CROSS,
                 markerSize=12,
                 thickness=2,
@@ -460,7 +397,7 @@ class VisionProcessor:
             cv2.drawMarker(
                 image,
                 tool_px,
-                (255, 0, 0),                  # blue tool0 projection
+                (255, 0, 0),
                 markerType=cv2.MARKER_CROSS,
                 markerSize=26,
                 thickness=3,
@@ -517,7 +454,6 @@ class VisionProcessor:
                 f"Could not save YOLO vote debug image {image_path}: {exc}"
             )
 
-    # TODO: refactor it
     def get_stable_yolo_candidates(
         self,
         target_class_name: str,
@@ -638,7 +574,6 @@ class VisionProcessor:
 
         return averaged_candidates, tool_projection
 
-    # TODO: refactor it
     # TODO: handle case in absence of any sensor in the camera frame 
     def select_yolo_grid_pose(
         self,
@@ -747,9 +682,8 @@ class VisionProcessor:
     def _select_highest_confidence(self, candidates):
         return max(candidates, key=lambda item: item["conf"])
 
-
     def _select_nearest_to_tool(self, candidates, tool_projection):
-        tool0_u, tool0_v, _tool0_z_cam = tool_projection
+        tool0_u, tool0_v, _ = tool_projection
 
         return min(
             candidates,
@@ -782,7 +716,6 @@ class VisionProcessor:
             return None
 
     def cam_param(self, name: str) -> float:
-        # choose between fx / fy / cx / cy 
         return float(self.node.get_parameter(name).value)
     
     def base_point_to_pixel_manual(self, x_base: float, y_base: float, z_base: float):

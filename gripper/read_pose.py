@@ -6,7 +6,7 @@ import time
 
 
 # Define your servo configuration
-servo_ids = [1, 2]  # Adjust to match your servo IDs
+servo_ids = [1]  # Adjust to match your servo IDs
 servo_type = "sts"     # Change to "sts" for STS servos
 
 controller = ServoController(servo_ids=servo_ids, servo_type=servo_type)

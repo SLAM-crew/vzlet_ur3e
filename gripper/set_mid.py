@@ -1,7 +1,7 @@
 from vassar_feetech_servo_sdk import ServoController
 
 # Initialize controller with your servo configuration
-servo_ids = [1, 2]
+servo_ids = [1]
 controller = ServoController(servo_ids=servo_ids, servo_type="sts")  # or "hls"
 controller.connect()
 

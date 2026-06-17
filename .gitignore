@@ -24,3 +24,4 @@ __pycache__/
 
 ws/dataset_output
 ws/models
+ws/vote_detect
