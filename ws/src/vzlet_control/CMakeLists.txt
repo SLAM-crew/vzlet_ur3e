@@ -23,7 +23,6 @@ install(
   scripts/pipeline_motion.py
   scripts/pipeline_vision.py
   scripts/pipeline_types.py
-  scripts/photo_recorder.py
   DESTINATION lib/${PROJECT_NAME}
 )
 

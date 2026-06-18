@@ -74,8 +74,8 @@ class IntegratedPickPipeline(Node):
         # Grasp.
         # TODO: tune these parameters and remove hardcoding
         self.declare_parameter("z_offset", 0.15 + 0.004 + 0.02) #  length from tool0 + cells offset
-        self.declare_parameter("gripper_close_position", 0.04)
-        self.declare_parameter("gripper_open_position", 0.5)
+        self.declare_parameter("gripper_close_position", 0.011)
+        self.declare_parameter("gripper_open_position", 0.006)
         self.declare_parameter("gripper_max_effort", 0.0)
 
         self.base_frame = self.get_parameter("base_frame").value

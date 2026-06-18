@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/home/sonieth2/vzlet_ur3e/ur_rtde_scripts/venv/bin/python3
 
 import argparse
 import csv
@@ -124,8 +124,8 @@ class TrajectoryTeleopCommander(Node):
         self.declare_parameter("servo_command_type", 1)
 
         self.declare_parameter("gripper_action", "/gripper_controller/gripper_cmd")
-        self.declare_parameter("gripper_open_position", 0.5)
-        self.declare_parameter("gripper_close_position", 0.04)
+        self.declare_parameter("gripper_close_position", 0.011)
+        self.declare_parameter("gripper_open_position", 0.006)
 
         # Dataset photo recording parameters.
         self.declare_parameter("image_topic", "/camera/camera/color/image_raw")

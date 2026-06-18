@@ -332,21 +332,20 @@
       </gpio>
     </ros2_control>
 
-    <ros2_control name="ScissorsGripperControl" type="system">
+    <ros2_control name="ParallelGripperControl" type="system">
       <hardware>
         <plugin>feetech_ros2_driver/FeetechHardwareInterface</plugin>
-        <param name="usb_port">/dev/feetech_driver</param>
+        <param name="usb_port">/dev/ttyACM0</param>
       </hardware>
 
-      <joint name="left_finger_joint">
+      <joint name="joint_finger_left">
         <param name="id">1</param>
-        <param name="range_min">0.0</param>
-        <param name="range_max">0.5</param>
+        <param name="range_min">2620</param>
+        <param name="range_max">3791</param>
         <command_interface name="position"/>
         <state_interface name="position"/>
         <state_interface name="velocity"/>
       </joint>
-      
     </ros2_control>
   </xacro:macro>
 </robot>

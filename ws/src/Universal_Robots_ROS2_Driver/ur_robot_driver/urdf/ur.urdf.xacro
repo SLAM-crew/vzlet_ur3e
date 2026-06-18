@@ -4,7 +4,7 @@
   <xacro:arg name="name" default="ur"/>
 
   <xacro:include filename="$(find ur_description)/urdf/ur_macro.xacro"/>
-  <xacro:include filename="$(find ur_robot_driver)/urdf/scissors_gripper.urdf.xacro"/>
+  <xacro:include filename="$(find ur_robot_driver)/urdf/parallel_gripper.urdf.xacro"/>
 
   <!-- ros2 control include -->
   <xacro:include filename="$(find ur_robot_driver)/urdf/ur.ros2_control.xacro" />
@@ -112,9 +112,7 @@
   <xacro:arg name="use_mesh" default="true" />
   <xacro:include filename="$(find realsense2_description)/urdf/_d435.urdf.xacro" />
 
-  <xacro:sensor_d435 parent="tool0" use_nominal_extrinsics="$(arg use_nominal_extrinsics)" add_plug="$(arg add_plug)" use_mesh="$(arg use_mesh)">
-    <!-- TODO: ask vitya for URDF -->
-    <!-- <origin xyz="0.03 0 0.015" rpy="0 -1.57 3.14"/> -->
-    <origin xyz="0.0212132 -0.0212132 0.01" rpy="0 -1.57  2.355"/>
+  <xacro:sensor_d435 parent="gripper_base_link" use_nominal_extrinsics="$(arg use_nominal_extrinsics)" add_plug="$(arg add_plug)" use_mesh="$(arg use_mesh)">
+    <origin xyz="0.0325 -0.0475 0.013" rpy="0 -1.57  1.57"/>
   </xacro:sensor_d435>
 </robot>

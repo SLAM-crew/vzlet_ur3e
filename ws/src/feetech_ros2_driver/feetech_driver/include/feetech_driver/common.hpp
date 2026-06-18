@@ -40,6 +40,10 @@ inline auto from_radians(const double angle) {
   return static_cast<int>(angle * kStsResolution / (2.0 * std::numbers::pi));
 }
 
+inline auto to_meters(const double radians) { return (0.012794 * (2.670354 - radians)); }
+
+inline auto from_meters(const double meters) { return 2.670354 - meters / 0.012794; }
+
 /// Sign-magnitude encoding: encode a signed value using the specified sign bit
 /// https://en.wikipedia.org/wiki/Signed_number_representations#Sign%E2%80%93magnitude
 inline auto encode_sign_magnitude(const int value, const int sign_bit) {

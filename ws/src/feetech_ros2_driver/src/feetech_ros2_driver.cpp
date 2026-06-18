@@ -265,11 +265,11 @@ hardware_interface::return_type FeetechHardwareInterface::read(const rclcpp::Tim
   }
   ranges::for_each(data | ranges::views::enumerate, [&](const auto& values) {
     const auto& [index, readings] = values;
-    state_hw_positions_[index] = feetech_driver::to_radians(
+    state_hw_positions_[index] = feetech_driver::to_meters(feetech_driver::to_radians(
         feetech_driver::from_sts(feetech_driver::WordBytes{.low = readings[0], .high = readings[1]}) -
-        feetech_driver::kStsMidpoint);
-    state_hw_velocities_[index] = feetech_driver::to_radians(
-        feetech_driver::from_sts(feetech_driver::WordBytes{.low = readings[2], .high = readings[3]}));
+        feetech_driver::kStsMidpoint));
+    state_hw_velocities_[index] = feetech_driver::to_meters(feetech_driver::to_radians(
+        feetech_driver::from_sts(feetech_driver::WordBytes{.low = readings[2], .high = readings[3]})));
   });
   return hardware_interface::return_type::OK;
 }
@@ -286,12 +286,7 @@ hardware_interface::return_type FeetechHardwareInterface::write(const rclcpp::Ti
     // Only include joints with command interfaces
     if (!info_.joints[i].command_interfaces.empty()) {
       commanded_joint_ids.push_back(joint_ids_[i]);
-      commanded_positions.push_back(feetech_driver::from_radians(hw_positions_[i]) + feetech_driver::kStsMidpoint);
-      commanded_speeds.push_back(2400);       // Default speed
-      commanded_accelerations.push_back(50);  // Default acceleration
-
-      commanded_joint_ids.push_back(joint_ids_[i] + 1);  // Assuming the second joint ID is the first ID + 1
-      commanded_positions.push_back(feetech_driver::from_radians(-hw_positions_[i]) + feetech_driver::kStsMidpoint);
+      commanded_positions.push_back(feetech_driver::from_radians(feetech_driver::from_meters(hw_positions_[i])) + feetech_driver::kStsMidpoint);
       commanded_speeds.push_back(2400);       // Default speed
       commanded_accelerations.push_back(50);  // Default acceleration
     }

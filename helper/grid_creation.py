@@ -10,14 +10,14 @@ import matplotlib.pyplot as plt
 # Default global params
 INPUT_CSV = "/home/sonieth2/vzlet_ur3e/ws/zone_poses_floor.csv"
 OUTPUT_CSV = "grid_poses.csv"
-INPUT_POSE_NAME = "00"
+INPUT_POSE_NAME = "zone1"
 
 GRID_X = 3
 GRID_Y = 5
 
 # Offset between neighboring cell centers, in meters.
-OFFSET_X = 0.029
-OFFSET_Y = 0.029
+OFFSET_X = 0.041
+OFFSET_Y = 0.041
 
 CSV_HEADERS = ["name", "id", "x", "y", "z", "qx", "qy", "qz", "qw"]
 

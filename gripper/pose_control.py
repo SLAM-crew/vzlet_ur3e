@@ -30,8 +30,8 @@ def main():
         print("Moving motors one by one...")
         
         positions_sequence = [
-            {1: 3100},
-            {1: 2048},
+            {1: 2620},
+            {1: 3791},
         ]
         
         for i, positions in enumerate(positions_sequence):

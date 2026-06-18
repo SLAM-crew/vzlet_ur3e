@@ -41,6 +41,6 @@ moveit_simple_controller_manager:
   gripper_controller:
     type: ParallelGripperCommand
     joints:
-      - left_finger_joint
+      - joint_finger_left
     action_ns: gripper_cmd
     default: true

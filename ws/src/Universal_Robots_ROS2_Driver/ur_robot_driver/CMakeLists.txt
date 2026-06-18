@@ -193,7 +193,7 @@ install(PROGRAMS scripts/wait_dashboard_server.sh
   DESTINATION bin
 )
 
-install(DIRECTORY config launch urdf
+install(DIRECTORY config launch urdf meshes
   DESTINATION share/${PROJECT_NAME}
 )
 

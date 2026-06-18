@@ -215,4 +215,4 @@ tool_contact_controller:
 
 gripper_controller:
   ros__parameters:
-    joint: left_finger_joint
+    joint: joint_finger_left

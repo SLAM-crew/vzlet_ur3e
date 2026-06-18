@@ -1,0 +1,161 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- This URDF was automatically created by SolidWorks to URDF Exporter! Originally created by Stephen Brawner (brawner@gmail.com) 
+     Commit Version: 1.6.0-4-g7f85cfe  Build Version: 1.6.7995.38578
+     For more information, please see http://wiki.ros.org/sw_urdf_exporter -->
+<robot
+  name="parallel_gripper">
+  <link
+    name="gripper_base_link">
+    <inertial>
+      <origin
+        xyz="0.000584073744926447 -0.000778038999513078 0.0272265470875744"
+        rpy="0 0 0" />
+      <mass
+        value="1.21690658212799" />
+      <inertia
+        ixx="0.000421154294273824"
+        ixy="2.39305579233049E-05"
+        ixz="2.23315792137906E-08"
+        iyy="0.00137070042804493"
+        iyz="-3.3186617407662E-06"
+        izz="0.00160381148588573" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://ur_robot_driver/meshes/base_link.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="0.792156862745098 0.819607843137255 0.933333333333333 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://ur_robot_driver/meshes/base_link.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint name="gripper_base_joint" type="fixed">
+    <parent link="tool0"/>
+    <child link="gripper_base_link"/>
+    <origin xyz="0 0 0" rpy="0 0 0"/>
+  </joint>
+  <link
+    name="link_finger_right">
+    <inertial>
+      <origin
+        xyz="-0.0143762939782807 -0.00036560412198058 0.0194612739836577"
+        rpy="0 0 0" />
+      <mass
+        value="0.330707173300301" />
+      <inertia
+        ixx="9.98388670731283E-05"
+        ixy="-1.94678918372045E-07"
+        ixz="-3.08681727163769E-05"
+        iyy="0.000113885951172085"
+        iyz="-1.58870040400008E-06"
+        izz="6.06911149959272E-05" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://ur_robot_driver/meshes/link_finger_right.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="0.792156862745098 0.819607843137255 0.933333333333333 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://ur_robot_driver/meshes/link_finger_right.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="joint_finger_right"
+    type="prismatic">
+    <origin
+      xyz="-0.023845 0 0.0696"
+      rpy="0 0 0" />
+    <parent
+      link="gripper_base_link" />
+    <child
+      link="link_finger_right" />
+    <axis
+      xyz="1 0 0" />
+    <mimic joint="joint_finger_left" multiplier="1.0"/>
+    <limit lower="0.0" upper="0.023" effort="5.0" velocity="3.0"/>
+  </joint>
+  <link
+    name="link_finger_left">
+    <inertial>
+      <origin
+        xyz="0.0143762939782807 0.000365604121980708 0.0194612739836577"
+        rpy="0 0 0" />
+      <mass
+        value="0.330707173300301" />
+      <inertia
+        ixx="9.98388670731283E-05"
+        ixy="-1.94678918371999E-07"
+        ixz="3.08681727163769E-05"
+        iyy="0.000113885951172085"
+        iyz="1.58870040400004E-06"
+        izz="6.06911149959271E-05" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://ur_robot_driver/meshes/link_finger_left.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="0.792156862745098 0.819607843137255 0.933333333333333 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://ur_robot_driver/meshes/link_finger_left.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="joint_finger_left"
+    type="prismatic">
+    <origin
+      xyz="0.023845 0 0.0696"
+      rpy="0 0 0" />
+    <parent
+      link="gripper_base_link" />
+    <child
+      link="link_finger_left" />
+    <axis
+      xyz="-1 0 0" />
+    <limit lower="0.0" upper="0.023" effort="5.0" velocity="3.0"/>
+  </joint>
+</robot>
