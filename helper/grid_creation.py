@@ -10,14 +10,24 @@ import matplotlib.pyplot as plt
 # Default global params
 INPUT_CSV = "/home/sonieth2/vzlet_ur3e/ws/zone_poses_floor.csv"
 OUTPUT_CSV = "grid_poses.csv"
-INPUT_POSE_NAME = "zone1"
+INPUT_POSE_NAME = "zone_sensor"
+# "sensor_storage" / "body_storage", example -->  "body_storage_00" / "body_storage_12"
+PREFIX_NAME = "sensor_storage"
+START_WITH_ID = 1
 
 GRID_X = 3
 GRID_Y = 5
 
 # Offset between neighboring cell centers, in meters.
-OFFSET_X = 0.041
-OFFSET_Y = 0.041
+# new version of sensor-cell-storage, wide 
+OFFSET_X = 0.033
+OFFSET_Y = 0.033
+# new version of body-cell-storage, wide 
+# OFFSET_X = 0.042
+# OFFSET_Y = 0.042
+# old version of body-cell-storage
+# OFFSET_X = 0.029
+# OFFSET_Y = 0.029
 
 CSV_HEADERS = ["name", "id", "x", "y", "z", "qx", "qy", "qz", "qw"]
 
@@ -55,6 +65,13 @@ def pose_value(row, key):
         raise ValueError(f"Invalid numeric value for column '{key}': {row.get(key)}")
 
 
+def make_pose_name(ix, iy):
+    if PREFIX_NAME:
+        return f"{PREFIX_NAME}_{ix}{iy}"
+
+    return f"{ix}{iy}"
+
+
 def create_grid_poses(base_pose, grid_x, grid_y, offset_x, offset_y):
     base_x = pose_value(base_pose, "x")
     base_y = pose_value(base_pose, "y")
@@ -67,11 +84,11 @@ def create_grid_poses(base_pose, grid_x, grid_y, offset_x, offset_y):
 
     rows = []
 
-    pose_id = 1
+    pose_id = START_WITH_ID
     for ix in range(grid_x):
         for iy in range(grid_y):
             rows.append({
-                "name": f"{ix}{iy}",
+                "name": make_pose_name(ix, iy),
                 "id": pose_id,
                 "x": base_x + ix * offset_x,
                 "y": base_y + iy * offset_y,
@@ -109,8 +126,8 @@ def plot_grid(rows, grid_x, grid_y):
     # Draw horizontal grid edges.
     for ix in range(grid_x):
         for iy in range(grid_y - 1):
-            p1 = poses[f"{ix}{iy}"]
-            p2 = poses[f"{ix}{iy + 1}"]
+            p1 = poses[make_pose_name(ix, iy)]
+            p2 = poses[make_pose_name(ix, iy + 1)]
             ax.plot(
                 [p1["x"], p2["x"]],
                 [p1["y"], p2["y"]],
@@ -121,8 +138,8 @@ def plot_grid(rows, grid_x, grid_y):
     # Draw vertical grid edges.
     for ix in range(grid_x - 1):
         for iy in range(grid_y):
-            p1 = poses[f"{ix}{iy}"]
-            p2 = poses[f"{ix + 1}{iy}"]
+            p1 = poses[make_pose_name(ix, iy)]
+            p2 = poses[make_pose_name(ix + 1, iy)]
             ax.plot(
                 [p1["x"], p2["x"]],
                 [p1["y"], p2["y"]],
@@ -241,6 +258,9 @@ def main():
 
     if args.grid_y < 1:
         raise ValueError("--grid-y must be >= 1")
+
+    if START_WITH_ID < 0:
+        raise ValueError("START_WITH_ID must be >= 0")
 
     base_pose = read_pose_by_name(args.input_csv, args.pose_name)
 
