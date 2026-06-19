@@ -16,15 +16,7 @@ from tf2_ros import Buffer, TransformListener
 
 from pipeline_motion import MotionController
 from pipeline_vision import VisionProcessor
-
-from pipeline_types import (
-    ACTION_PICK,
-    ACTION_PLACE,
-    ZONE_CSV_FILE,
-    DEFAULT_YOLO_MODEL_FILE,
-    FINAL_ZONE,
-    INITIAL_ZONE,
-)
+from pipeline_utils import PipelineUtils
 
 class IntegratedPickPipeline(Node):
     def __init__(self):
@@ -34,7 +26,7 @@ class IntegratedPickPipeline(Node):
         self.declare_parameter("base_frame", "world")
         self.declare_parameter("tool_frame", "tool0")
         self.declare_parameter("group_name", "ur_manipulator")
-        self.declare_parameter("zone_pose_csv", ZONE_CSV_FILE)
+        self.declare_parameter("zone_pose_csv", "/home/sonieth2/vzlet_ur3e/ws/zone_poses_floor.csv")
 
         # MoveIt config.
         self.declare_parameter("planner_id", "RRTConnect")
@@ -69,14 +61,34 @@ class IntegratedPickPipeline(Node):
         self.declare_parameter("cy", 269.791445)
 
         # Circle detection.
-        self.declare_parameter("yolo_model_path", DEFAULT_YOLO_MODEL_FILE)
+        self.declare_parameter("yolo_model_path", "/home/sonieth2/vzlet_ur3e/ws/models/vzlet_ver7.pt")
 
         # Grasp.
         # TODO: tune these parameters and remove hardcoding
-        self.declare_parameter("z_offset", 0.15 + 0.004 + 0.02) #  length from tool0 + cells offset
-        self.declare_parameter("gripper_close_position", 0.011)
+        self.declare_parameter("z_offset_body", 0.165)
+        self.declare_parameter("z_offset_sensor_pick", 0.15)
+        self.declare_parameter("z_offset_sensor_place", 0.18)
+
+        self.declare_parameter("gripper_body_close_position", 0.011)
+        self.declare_parameter("gripper_sensor_close_position", 0.016)
         self.declare_parameter("gripper_open_position", 0.006)
         self.declare_parameter("gripper_max_effort", 0.0)
+
+        ### TODO refactor
+        self.declare_parameter(
+            "controller_switch_service",
+            "/controller_manager/switch_controller",
+        )
+        self.declare_parameter("trajectory_controller", "joint_trajectory_controller")
+        self.declare_parameter("servo_controller", "forward_position_controller")
+        self.declare_parameter("controller_switch_timeout", 5.0)
+
+        self.declare_parameter(
+            "servo_command_type_service",
+            "/servo_node/switch_command_type",
+        )
+        self.declare_parameter("servo_command_type", 1)
+        ###
 
         self.base_frame = self.get_parameter("base_frame").value
         self.tool_frame = self.get_parameter("tool_frame").value
@@ -99,6 +111,7 @@ class IntegratedPickPipeline(Node):
         # Initialize Subsystems
         self.motion = MotionController(self)
         self.vision = VisionProcessor(self)
+        self.utils = PipelineUtils(self)
 
         self.image_sub = self.create_subscription(
             Image,
@@ -107,9 +120,9 @@ class IntegratedPickPipeline(Node):
             10,
         )
   
-    def move_to_voted_sensor_grid_pose(self) -> bool:
+    def move_to_voted_grid_pose(self, class_type: str) -> bool:
         pose_name = self.vision.select_yolo_grid_pose(
-            target_class_name="sensor",
+            target_class_name=class_type,
         )
         if pose_name is None:
             return False
@@ -127,13 +140,31 @@ class IntegratedPickPipeline(Node):
         if bool(self.get_parameter("add_ground_plane").value):
             self.publish_ground_plane()
 
+        self.get_logger().info("Switching to trajectory controller mode")
+        if not self.utils.switch_to_trajectory_mode():
+            self.get_logger().error("Could not switch to trajectory controller mode")
+            return False
+        
+        try:
+            self.utils.load_csv_poses()
+        except Exception as exc:
+            self.get_logger().error(f"Could not load zone poses: {exc}")
+            return False
+
         stages = [
-        ("start zone pose", lambda: self.motion.move_to_zone(INITIAL_ZONE)),
-        ("tool alignment", self.motion.align_tool_to_ground),
-        ("voted sensor grid pose", self.move_to_voted_sensor_grid_pose),
-        ("grasp-pick", lambda: self.motion.execute_grasp_sequence(ACTION_PICK)),
-        ("final zone pose", lambda: self.motion.move_to_zone(FINAL_ZONE)),
-        ("grasp-place", lambda: self.motion.execute_grasp_sequence(ACTION_PLACE)),
+        ("pick zone: body", lambda: self.motion.move_to_zone("BODY_PICK_ZONE")),
+        ("tool alignment", lambda: self.motion.align_tool_to_ground()),
+        ("voted grid pose: body", lambda: self.move_to_voted_grid_pose("body")),
+        ("grasp-pick: body", lambda: self.motion.execute_grasp_sequence("ACTION_PICK", "body")), 
+        ("body cell zone", lambda: self.motion.move_to_zone("BODY_CELL_ZONE")),
+        ("grasp-place: body", lambda: self.motion.execute_grasp_sequence("ACTION_PLACE", "body")),
+        ("pick zone: sensor", lambda: self.motion.move_to_zone("SENSOR_PICK_ZONE")),
+        ("tool alignment", lambda: self.motion.align_tool_to_ground()),
+        ("voted grid pose: sensor", lambda: self.move_to_voted_grid_pose("sensor")),
+        ("grasp-pick: sensor", lambda: self.motion.execute_grasp_sequence("ACTION_PICK", "sensor")),
+        ("body cell zone", lambda: self.motion.move_to_zone("BODY_CELL_ZONE")),
+        ("grasp-place: sensor", lambda: self.motion.execute_grasp_sequence("ACTION_PLACE", "sensor")),
+
     ]
 
         for name, fn in stages:

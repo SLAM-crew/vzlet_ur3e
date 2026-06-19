@@ -24,8 +24,6 @@ from moveit_msgs.msg import (
 )
 from shape_msgs.msg import SolidPrimitive
 
-from pipeline_types import ACTION_PICK, ACTION_PLACE
-
 
 class MotionController:
     def __init__(self, node):
@@ -166,10 +164,13 @@ class MotionController:
         self.node.get_logger().error(f"{label}: execution failed with status {status}")
         return False
 
-    def command_gripper(self, position: float, label: Optional[str] = None) -> bool:
+    def command_gripper(self, position: float, class_type: str, label: Optional[str] = None) -> bool:
         if label is None:
             open_pos = float(self.node.get_parameter("gripper_open_position").value)
-            close_pos = float(self.node.get_parameter("gripper_close_position").value)
+            if class_type == "body":
+                close_pos = float(self.node.get_parameter("gripper_body_close_position").value)
+            if class_type == "sensor":  
+                close_pos = float(self.node.get_parameter("gripper_sensor_close_position").value)
             label = "open" if abs(position - open_pos) < abs(position - close_pos) else "close"
 
         self.node.get_logger().info(f"Gripper {label}: position={position:.4f}")
@@ -209,24 +210,37 @@ class MotionController:
         self.node.get_logger().error(f"Gripper {label}: failed with status {status}")
         return True
 
-    def execute_grasp_sequence(self, action: str) -> bool:
+    def execute_grasp_sequence(self, action: str, class_type: str) -> bool:
         start_pose = self.get_current_tool0_pose()
         if start_pose is None:
             return False
 
-        z_offset = abs(float(self.node.get_parameter("z_offset").value))
+        if class_type == "body":
+            z_offset = abs(float(self.node.get_parameter("z_offset_body").value))
+        if class_type == "sensor":
+            if action == "ACTION_PICK":
+                z_offset = abs(float(self.node.get_parameter("z_offset_sensor_pick").value))
+            if action == "ACTION_PLACE":
+                z_offset = abs(float(self.node.get_parameter("z_offset_sensor_place").value))
+
         lowered_pose = copy.deepcopy(start_pose)
         lowered_pose.pose.position.z = z_offset
-        if action == ACTION_PICK:
+        if action == "ACTION_PICK":
             pre_grasp_pos = float(self.node.get_parameter("gripper_open_position").value)
-            post_grasp_pos = float(self.node.get_parameter("gripper_close_position").value)
-        elif action == ACTION_PLACE:
-            pre_grasp_pos = float(self.node.get_parameter("gripper_close_position").value)
+            if class_type == "body":
+                post_grasp_pos = float(self.node.get_parameter("gripper_body_close_position").value)
+            if class_type == "sensor":
+                post_grasp_pos = float(self.node.get_parameter("gripper_sensor_close_position").value)
+        elif action == "ACTION_PLACE":
             post_grasp_pos = float(self.node.get_parameter("gripper_open_position").value)
+            if class_type == "body":
+                pre_grasp_pos = float(self.node.get_parameter("gripper_body_close_position").value)
+            if class_type == "sensor":
+                pre_grasp_pos = float(self.node.get_parameter("gripper_sensor_close_position").value)
 
-        if action == ACTION_PICK and not self.command_gripper(pre_grasp_pos): return False
+        if action == "ACTION_PICK" and not self.command_gripper(pre_grasp_pos, class_type): return False
         if not self.execute_move(lowered_pose, f"Move down for {action}"): return False
-        if not self.command_gripper(post_grasp_pos): return False
+        if not self.command_gripper(post_grasp_pos, class_type): return False
         if not self.execute_move(start_pose, "Return to upper pose"): return False
 
         return True
@@ -322,48 +336,11 @@ class MotionController:
         target_pose.pose.orientation = self.make_tool0_z_face_ground_orientation(current_pose.pose.orientation)
         return self.execute_move(target_pose, "Align tool0 to ground")
 
-    def load_zone_poses(self, csv_file_path: str) -> list:
-        csv_file = Path(csv_file_path)
-        poses = []
-        with csv_file.open("r") as f:
-            reader = csv.DictReader(f)
-            for row in reader:
-                normalized = {
-                    (key or "").strip(): (value.strip() if isinstance(value, str) else value)
-                    for key, value in row.items()
-                    if key is not None
-                }
-                poses.append({
-                    "name": normalized.get("name"),
-                    "id": int(normalized["id"]),
-                    "x": float(normalized["x"]),
-                    "y": float(normalized["y"]),
-                    "z": float(normalized["z"]),
-                    "qx": float(normalized["qx"]),
-                    "qy": float(normalized["qy"]),
-                    "qz": float(normalized["qz"]),
-                    "qw": float(normalized["qw"]),
-                })
-        return poses
-    
-    def move_to_zone(self,  pose_name: str, constraint: Optional[str] = None) -> bool:
-        try:
-            poses = self.load_zone_poses(self.node.get_parameter("zone_pose_csv").value)
-        except Exception as exc:
-            self.node.get_logger().error(f"Could not load zone poses: {exc}")
-            return False
-
-        if not poses:
-            self.node.get_logger().error("No zone poses found")
-            return False
-
-        selected_pose = next((p for p in poses if str(p.get("name", "")).strip() == pose_name), None)
-
+    def move_to_zone(self, pose_name: str, constraint: Optional[str] = None) -> bool:
+        
+        pose_name = str(pose_name).strip()
+        selected_pose = self.node.utils.get_pose_by_name(pose_name)
         if selected_pose is None:
-            available_names = ", ".join(str(p.get("name", "")).strip() for p in poses if p.get("name"))
-            self.node.get_logger().error(
-                f"Zone pose '{pose_name}' was not found in CSV; available names: {available_names}"
-            )
             return False
 
         path_constraints = None
@@ -372,31 +349,40 @@ class MotionController:
         if constraint == "z_ground":
             current_pose = self.get_current_tool0_pose()
             if current_pose is None:
-                self.node.get_logger().error("Could not retrieve current pose for orientation constraint")
+                self.node.get_logger().error(
+                    "Could not retrieve current pose for orientation constraint"
+                )
                 return False
 
             constrained_orientation = self.make_tool0_z_face_ground_orientation(
                 current_pose.pose.orientation
             )
-            path_constraints = self.create_tool0_ground_orientation_constraint(constrained_orientation)
+            path_constraints = self.create_tool0_ground_orientation_constraint(
+                constrained_orientation
+            )
             label_prefix = "constrained zone pose"
 
         target = PoseStamped()
         target.header.frame_id = self.node.get_parameter("base_frame").value
         target.header.stamp = self.node.get_clock().now().to_msg()
+
         target.pose.position.x = selected_pose["x"]
         target.pose.position.y = selected_pose["y"]
         target.pose.position.z = selected_pose["z"]
+
         target.pose.orientation.x = selected_pose["qx"]
         target.pose.orientation.y = selected_pose["qy"]
         target.pose.orientation.z = selected_pose["qz"]
         target.pose.orientation.w = selected_pose["qw"]
 
-        label = f"{label_prefix} {selected_pose['name']} (#{selected_pose['id']})"
-        
-        if not self.execute_move(target, label, path_constraints=path_constraints):
+        label = f"{label_prefix} {pose_name}"
+
+        if not self.execute_move(
+            target,
+            label,
+            path_constraints=path_constraints,
+        ):
             return False
-        
+
         time.sleep(1.5)
         return True
-

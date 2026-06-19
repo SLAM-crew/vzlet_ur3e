@@ -12,10 +12,6 @@ from geometry_msgs.msg import PointStamped
 from sensor_msgs.msg import Image
 from tf2_geometry_msgs import do_transform_point
 
-from pipeline_types import (
-    DEFAULT_YOLO_MODEL_FILE,
-)
-
 class VisionProcessor:
     def __init__(self, node):
         self.node = node
@@ -102,23 +98,27 @@ class VisionProcessor:
             self.node.get_logger().warn(f"Could not project tool0 onto image: {exc}")
             return None
     
-    def find_closest_zone_pose_to_base_xy(self, target_x_base: float, target_y_base: float):
-        try:
-            poses = self.node.motion.load_zone_poses(self.node.get_parameter("zone_pose_csv").value)
-        except Exception as exc:
-            self.node.get_logger().error(f"Could not load zone poses: {exc}")
-            return None
+    def find_closest_zone_pose_to_base_xy(
+        self,
+        target_x_base: float,
+        target_y_base: float,
+        target_class_name: str,
+    ):
+        poses = self.node.utils.poses
 
         if not poses:
-            self.node.get_logger().error("No zone poses found")
+            self.node.get_logger().error("No zone poses loaded")
             return None
 
+        best_pose_name = None
         best_pose = None
         best_dist = None
 
-        for pose in poses:
+        for pose_name, pose in poses.items():
+            if pose_name.startswith("zone"):
+                continue
 
-            if pose["name"].startswith("zone"):
+            if target_class_name is not None and target_class_name not in pose_name:
                 continue
 
             dist = math.hypot(
@@ -128,6 +128,7 @@ class VisionProcessor:
 
             if best_dist is None or dist < best_dist:
                 best_dist = dist
+                best_pose_name = pose_name
                 best_pose = pose
 
         if best_pose is None:
@@ -135,7 +136,7 @@ class VisionProcessor:
 
         self.node.get_logger().info(
             f"Closest CSV grid pose to bbox center: "
-            f"name={best_pose['name']}, "
+            f"name={best_pose_name}, "
             f"dist_m={best_dist:.4f}, "
             f"target_x={target_x_base:.4f}, "
             f"target_y={target_y_base:.4f}, "
@@ -143,7 +144,7 @@ class VisionProcessor:
             f"pose_y={best_pose['y']:.4f}"
         )
 
-        return best_pose
+        return best_pose_name
 
     def get_camera_height_depth_estimate(self) -> Optional[float]:
         base_frame = self.node.get_parameter("base_frame").value
@@ -430,10 +431,10 @@ class VisionProcessor:
             cv2.LINE_AA,
         )
 
-        image = self.draw_known_pose_labels(
-            image,
-            pose_names=("04", "24"),
-            )
+        # image = self.draw_known_pose_labels(
+        #     image,
+        #     pose_names=("04", "24"),
+        #     )
 
         return image
 
@@ -610,12 +611,13 @@ class VisionProcessor:
             )
             return None
 
-        pose = self.find_closest_zone_pose_to_base_xy(
+        pose_name = self.find_closest_zone_pose_to_base_xy(
             target_base.point.x,
             target_base.point.y,
+            target_class_name,
         )
 
-        if pose is None:
+        if pose_name is None:
             self.node.get_logger().error(
                 "Could not match selected YOLO candidate to any CSV grid pose"
             )
@@ -628,10 +630,10 @@ class VisionProcessor:
             f"base_x={target_base.point.x:.4f}, "
             f"base_y={target_base.point.y:.4f}, "
             f"base_z={target_base.point.z:.4f}, "
-            f"matched grid pose={pose['name']}"
+            f"matched grid pose={pose_name}"
         )
 
-        return pose["name"]
+        return pose_name
 
     def image_callback(self, msg: Image):
         try:
@@ -702,7 +704,7 @@ class VisionProcessor:
             self.node.get_logger().error("Ultralytics is not available, cannot use neural circle detection")
             return None
 
-        model_path = Path(str(self.node.get_parameter("yolo_model_path").value or DEFAULT_YOLO_MODEL_FILE))
+        model_path = Path(str(self.node.get_parameter("yolo_model_path").value))
         if not model_path.exists():
             self.node.get_logger().error(f"YOLO model file not found: {model_path}")
             return None
@@ -756,21 +758,14 @@ class VisionProcessor:
         return float(u), float(v), float(Z)
     
     def draw_known_pose_labels(self, image, pose_names=("02", "12")):
-        try:
-            poses = self.node.motion.load_zone_poses(
-                self.node.get_parameter("zone_pose_csv").value
-            )
-        except Exception as exc:
-            self.node.get_logger().warn(f"Could not load zone poses for debug draw: {exc}")
-            return image
-
         out = image.copy()
 
-        for pose in poses:
-            name = str(pose["name"])
+        for name in pose_names:
+            name = str(name).strip()
 
-            if name not in pose_names:
-                continue
+            pose = self.node.utils.get_pose_by_name(name)
+
+            if pose is None: continue
 
             result = self.base_point_to_pixel_manual(
                 pose["x"],

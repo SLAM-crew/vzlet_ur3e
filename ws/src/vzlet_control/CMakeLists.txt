@@ -13,7 +13,7 @@ find_package(ament_cmake REQUIRED)
 
 
 install(
-  DIRECTORY launch config
+  DIRECTORY config
   DESTINATION share/${PROJECT_NAME}
 )
 
@@ -22,7 +22,7 @@ install(
   scripts/teleop.py
   scripts/pipeline_motion.py
   scripts/pipeline_vision.py
-  scripts/pipeline_types.py
+  scripts/pipeline_utils.py
   DESTINATION lib/${PROJECT_NAME}
 )
 

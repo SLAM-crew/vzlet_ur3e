@@ -17,7 +17,6 @@ import cv2
 import rclpy
 from action_msgs.msg import GoalStatus
 from control_msgs.action import ParallelGripperCommand
-from controller_manager_msgs.srv import SwitchController
 from cv_bridge import CvBridge
 from geometry_msgs.msg import PoseStamped, TwistStamped
 from moveit_msgs.action import MoveGroup
@@ -28,7 +27,6 @@ from moveit_msgs.msg import (
     OrientationConstraint,
     PositionConstraint,
 )
-from moveit_msgs.srv import ServoCommandType
 from rclpy.action import ActionClient
 from rclpy.executors import MultiThreadedExecutor
 from rclpy.node import Node
@@ -36,9 +34,9 @@ from sensor_msgs.msg import Image
 from shape_msgs.msg import SolidPrimitive
 from tf2_ros import Buffer, TransformListener
 
+from pipeline_utils import PipelineUtils
 
 CSV_HEADERS = ["name", "id", "x", "y", "z", "qx", "qy", "qz", "qw"]
-
 
 def normalize_row(row):
     return {
@@ -92,7 +90,6 @@ class TrajectoryTeleopCommander(Node):
 
         self.declare_parameter("base_frame", "world")
         self.declare_parameter("tool_frame", "tool0")
-        self.declare_parameter("frame_id", "world")
 
         self.declare_parameter("move_action", "/move_action")
         self.declare_parameter("group_name", "ur_manipulator")
@@ -124,56 +121,38 @@ class TrajectoryTeleopCommander(Node):
         self.declare_parameter("servo_command_type", 1)
 
         self.declare_parameter("gripper_action", "/gripper_controller/gripper_cmd")
-        self.declare_parameter("gripper_close_position", 0.011)
+        self.declare_parameter("gripper_body_close_position", 0.011)
+        self.declare_parameter("gripper_sensor_close_position", 0.016)
         self.declare_parameter("gripper_open_position", 0.006)
 
-        # Dataset photo recording parameters.
+        # Dataset snapshot parameters.
         self.declare_parameter("image_topic", "/camera/camera/color/image_raw")
-        self.declare_parameter("save_every_n", 45)
         self.declare_parameter("output_dir", "dataset_output")
-        self.declare_parameter("image_extension", "jpg")
 
-        self.csv_file = Path(csv_file)
-        ensure_csv_exists(self.csv_file)
-        self.poses = self.load_poses()
+        self.csv_file = Path(csv_file);ensure_csv_exists(self.csv_file);self.utils = PipelineUtils(self)
+        try:
+            self.utils.load_csv_poses(str(self.csv_file))
+        except Exception as exc:
+            self.get_logger().error(f"Could not load zone poses: {exc}")
 
         self.base_frame = str(self.get_parameter("base_frame").value)
         self.tool_frame = str(self.get_parameter("tool_frame").value)
-        self.frame_id = str(self.get_parameter("frame_id").value)
 
         self.servo_topic = str(self.get_parameter("servo_topic").value)
         self.linear_speed = float(self.get_parameter("linear_speed").value)
         self.publish_rate = float(self.get_parameter("publish_rate").value)
 
-        self.trajectory_controller = str(
-            self.get_parameter("trajectory_controller").value
-        )
-        self.servo_controller = str(
-            self.get_parameter("servo_controller").value
-        )
+        self.trajectory_controller = str(self.get_parameter("trajectory_controller").value)
+        self.servo_controller = str(self.get_parameter("servo_controller").value)
 
         self.gripper_action = str(self.get_parameter("gripper_action").value)
-        self.gripper_open_position = float(
-            self.get_parameter("gripper_open_position").value
-        )
-        self.gripper_close_position = float(
-            self.get_parameter("gripper_close_position").value
-        )
+        self.gripper_body_close_position = float(self.get_parameter("gripper_body_close_position").value)
+        self.gripper_sensor_close_position = float(self.get_parameter("gripper_sensor_close_position").value)
+        self.gripper_open_position = float(self.get_parameter("gripper_open_position").value)
+        self.selected_grasp_object = "body"
 
         self.image_topic = str(self.get_parameter("image_topic").value)
-        self.save_every_n = int(self.get_parameter("save_every_n").value)
         self.output_dir = Path(str(self.get_parameter("output_dir").value))
-        self.image_extension = str(
-            self.get_parameter("image_extension").value
-        ).lower()
-
-        if self.save_every_n < 1:
-            self.get_logger().warn("save_every_n must be >= 1. Falling back to 1.")
-            self.save_every_n = 1
-
-        if self.image_extension not in ["jpg", "jpeg", "png"]:
-            self.get_logger().warn("Unsupported image_extension. Falling back to jpg.")
-            self.image_extension = "jpg"
 
         self.output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -184,19 +163,20 @@ class TrajectoryTeleopCommander(Node):
         self.gripper_busy = False
 
         self.last_record_time_s = 0.0
-        self.record_debounce_s = 0.5
 
         self.current_twist = TwistStamped()
-        self.current_twist.header.frame_id = self.frame_id
+        self.current_twist.header.frame_id = self.base_frame
         self.lock = threading.Lock()
 
         self.bridge = CvBridge()
         self.dataset_lock = threading.Lock()
-        self.dataset_recording = False
         self.dataset_dir = None
         self.zip_path = None
-        self.image_count = 0
         self.saved_count = 0
+        self.latest_image = None
+        self.latest_image_stamp = None
+        self.last_snapshot_time_s = 0.0
+        self.dataset_archived = False
 
         self.tf_buffer = Buffer()
         self.tf_listener = TransformListener(self.tf_buffer, self)
@@ -226,28 +206,21 @@ class TrajectoryTeleopCommander(Node):
             self.gripper_action,
         )
 
-        self.switch_controller_client = self.create_client(
-            SwitchController,
-            str(self.get_parameter("controller_switch_service").value),
-        )
-
-        self.servo_command_type_client = self.create_client(
-            ServoCommandType,
-            str(self.get_parameter("servo_command_type_service").value),
-        )
-
         self.publish_timer = self.create_timer(
             1.0 / self.publish_rate,
             self.publish_servo_command,
         )
 
-        self.get_logger().info(f"Loaded {len(self.poses)} poses from: {self.csv_file}")
+        self.get_logger().info(f"Loaded {len(self.utils.poses)} poses from: {self.csv_file}")
         self.get_logger().info(f"Servo topic: {self.servo_topic}")
-        self.get_logger().info(f"Frame ID: {self.frame_id}")
+        self.get_logger().info(f"Frame ID: {self.base_frame}")
         self.get_logger().info(f"Gripper action: {self.gripper_action}")
+        self.get_logger().info(
+            f"Selected grasp object: {self.selected_grasp_object} "
+        )
         self.get_logger().info(f"Image topic: {self.image_topic}")
         self.get_logger().info(
-            f"Dataset hotkey: z toggles photo recording, save_every_n={self.save_every_n}"
+            "Dataset hotkey: z captures one photo; archive is created on node shutdown"
         )
         self.get_logger().info("Pose hotkey: p records current EEF pose")
 
@@ -299,11 +272,15 @@ class TrajectoryTeleopCommander(Node):
 
     def handle_global_hotkey(self, key: str) -> bool:
         if key == "z":
-            self.toggle_dataset_recording()
+            self.capture_dataset_photo()
             return True
 
         if key == "p":
             self.record_current_pose()
+            return True
+
+        if key == "v":
+            self.toggle_grasp_object()
             return True
 
         if key == "\x03":
@@ -325,88 +302,102 @@ class TrajectoryTeleopCommander(Node):
 
         return dataset_dir, zip_path
 
-    def start_dataset_recording(self):
+    def ensure_dataset_paths(self):
+        if self.dataset_dir is not None and self.zip_path is not None:
+            return self.dataset_dir, self.zip_path
+
+        self.dataset_dir, self.zip_path = self.make_unique_dataset_paths()
+        self.dataset_dir.mkdir(parents=True, exist_ok=False)
+        self.dataset_archived = False
+
+        self.get_logger().info(f"Dataset snapshot folder: {self.dataset_dir}")
+
+        return self.dataset_dir, self.zip_path
+
+    def image_callback(self, msg: Image):
+        try:
+            cv_image = self.bridge.imgmsg_to_cv2(
+                msg,
+                desired_encoding="bgr8",
+            )
+        except Exception as exc:
+            self.get_logger().error(f"Failed to convert camera image: {exc}")
+            return
+
         with self.dataset_lock:
-            if self.dataset_recording:
-                self.get_logger().warn("Dataset photo recording is already running")
+            self.latest_image = cv_image.copy()
+            self.latest_image_stamp = msg.header.stamp
+
+    def capture_dataset_photo(self):
+        now = time.monotonic()
+
+        with self.dataset_lock:
+            
+            if (now - self.last_snapshot_time_s) < 0.1: # --> self.snapshot_debounce_s
+                self.get_logger().warn("Snapshot ignored: debounce active")
                 return
 
-            self.dataset_dir, self.zip_path = self.make_unique_dataset_paths()
-            self.dataset_dir.mkdir(parents=True, exist_ok=False)
+            self.last_snapshot_time_s = now
 
-            self.image_count = 0
-            self.saved_count = 0
-            self.dataset_recording = True
-
-            self.get_logger().info("Dataset photo recording started")
-            self.get_logger().info(f"Recording every {self.save_every_n}th image")
-            self.get_logger().info(f"Saving dataset to: {self.dataset_dir}")
-
-    def stop_dataset_recording(self):
-        with self.dataset_lock:
-            if not self.dataset_recording:
-                self.get_logger().warn("Dataset photo recording is not running")
+            if self.latest_image is None:
+                self.get_logger().warn(
+                    "Snapshot ignored: no camera frame received yet"
+                )
                 return
 
-            self.dataset_recording = False
+            dataset_dir, _ = self.ensure_dataset_paths()
+            image_index = self.saved_count
+            cv_image = self.latest_image.copy()
+
+        filename = f"img_{image_index:06d}.jpg"
+        filepath = dataset_dir / filename
+
+        try:
+            # if image_extension in ["jpg", "jpeg"]:
+            #     ok = cv2.imwrite(
+            #         str(filepath),
+            #         cv_image,
+            #         [cv2.IMWRITE_JPEG_QUALITY, 95],
+            #     )
+            # else:
+            #     ok = cv2.imwrite(str(filepath), cv_image)
+            # TODO: why if jpg --> 95 quality value ???
+            ok = cv2.imwrite(
+                str(filepath),
+                cv_image,
+                [cv2.IMWRITE_JPEG_QUALITY, 95],
+            )
+            if not ok:
+                self.get_logger().error(f"Failed to write image: {filepath}")
+                return
+
+            with self.dataset_lock:
+                self.saved_count += 1
+                saved_count = self.saved_count
+
+            self.get_logger().info(
+                f"Saved snapshot #{saved_count}: {filepath}"
+            )
+
+        except Exception as exc:
+            self.get_logger().error(f"Failed to save snapshot: {exc}")
+
+    def finalize_dataset_archive(self):
+        with self.dataset_lock:
             dataset_dir = self.dataset_dir
             zip_path = self.zip_path
             saved_count = self.saved_count
+            already_archived = self.dataset_archived
+
+            if saved_count < 1:
+                return
+
+            if already_archived:
+                return
+
+            self.dataset_archived = True
 
         self.create_zip_archive(dataset_dir, zip_path, saved_count)
-
-    def toggle_dataset_recording(self):
-        with self.dataset_lock:
-            is_recording = self.dataset_recording
-
-        if is_recording:
-            self.stop_dataset_recording()
-        else:
-            self.start_dataset_recording()
-
-    def image_callback(self, msg: Image):
-        with self.dataset_lock:
-            if not self.dataset_recording:
-                return
-
-            self.image_count += 1
-
-            if self.image_count % self.save_every_n != 0:
-                return
-
-            dataset_dir = self.dataset_dir
-            image_extension = self.image_extension
-            image_index = self.saved_count
-
-            try:
-                cv_image = self.bridge.imgmsg_to_cv2(
-                    msg,
-                    desired_encoding="bgr8",
-                )
-
-                filename = f"img_{image_index:06d}.{image_extension}"
-                filepath = dataset_dir / filename
-
-                if image_extension in ["jpg", "jpeg"]:
-                    ok = cv2.imwrite(
-                        str(filepath),
-                        cv_image,
-                        [cv2.IMWRITE_JPEG_QUALITY, 95],
-                    )
-                else:
-                    ok = cv2.imwrite(str(filepath), cv_image)
-
-                if not ok:
-                    self.get_logger().error(f"Failed to write image: {filepath}")
-                    return
-
-                self.saved_count += 1
-
-                if self.saved_count % 50 == 0:
-                    self.get_logger().info(f"Saved {self.saved_count} images")
-
-            except Exception as exc:
-                self.get_logger().error(f"Failed to save image: {exc}")
 
     def create_zip_archive(self, dataset_dir, zip_path, saved_count):
         if dataset_dir is None or zip_path is None:
@@ -430,44 +421,13 @@ class TrajectoryTeleopCommander(Node):
         self.get_logger().info(f"Zip archive created: {zip_path}")
         self.get_logger().info(f"Total saved images: {saved_count}")
 
-    def load_poses(self) -> list:
-        if not self.csv_file.exists():
-            raise FileNotFoundError(f"CSV file does not exist: {self.csv_file}")
-
-        poses = []
-
-        with self.csv_file.open("r", newline="") as f:
-            reader = csv.DictReader(f)
-
-            for row in reader:
-                normalized = normalize_row(row)
-
-                if not normalized:
-                    continue
-
-                pose = {
-                    "name": normalized.get("name", ""),
-                    "id": int(normalized["id"]),
-                    "x": float(normalized["x"]),
-                    "y": float(normalized["y"]),
-                    "z": float(normalized["z"]),
-                    "qx": float(normalized["qx"]),
-                    "qy": float(normalized["qy"]),
-                    "qz": float(normalized["qz"]),
-                    "qw": float(normalized["qw"]),
-                }
-
-                poses.append(pose)
-
-        return poses
-
     def reload_poses(self):
-        self.poses = self.load_poses()
-        self.get_logger().info(f"Reloaded {len(self.poses)} poses from CSV")
+        self.utils.load_csv_poses(str(self.csv_file))
+        self.get_logger().info(f"Reloaded {len(self.utils.poses)} poses from CSV")
 
     def get_next_counter(self):
         self.reload_poses()
-        return len(self.poses) + 1
+        return len(self.utils.poses) + 1
 
     def print_main_menu(self):
         print(
@@ -476,20 +436,22 @@ Main menu:
 
   l             -> list parsed CSV poses
   t             -> enter teleop mode
-  z             -> start/stop dataset photo recording
+  z             -> capture one dataset photo
   p             -> record current tool0 pose to CSV
-  <pose_name>   -> switch to joint_trajectory_controller and move to CSV pose
+  v             -> switch grasp object body/sensor
+  <pose_id>     -> switch to joint_trajectory_controller and move to CSV pose
   q / quit      -> exit
 
 During trajectory execution:
-  z             -> start/stop dataset photo recording
+  z             -> capture one dataset photo
   p             -> record current tool0 pose to CSV
+  v             -> switch grasp object body/sensor
   Ctrl+C        -> exit
 
 Examples:
-  zone1
-  00
-  12_pre
+  1
+  100
+  224
 """
         )
 
@@ -503,7 +465,8 @@ Teleop mode:
   r / f  -> +Z / -Z
 
   g      -> toggle gripper open/close
-  z      -> start/stop dataset photo recording
+  v      -> switch grasp object body/sensor
+  z      -> capture one dataset photo
   p      -> record current tool0 pose to CSV
   t      -> exit teleop and return to main menu
   Ctrl+C -> exit
@@ -514,132 +477,22 @@ Teleop mode:
         self.reload_poses()
 
         print("\nAvailable poses:")
-        for pose in self.poses:
+
+        def pose_sort_key(item):
+            name, pose = item
+            try:
+                return (0, int(str(pose.get("id", "")).strip()), name)
+            except Exception:
+                return (1, 0, name)
+
+        for name, pose in sorted(self.utils.poses.items(), key=pose_sort_key):
+            pose_id = str(pose.get("id", "")).strip()
             print(
-                f"  {pose['name']} -> "
+                f"  id={pose_id}  {name} -> "
                 f"x={pose['x']:.4f}, y={pose['y']:.4f}, z={pose['z']:.4f}"
             )
         print("")
 
-    def find_pose(self, command: str) -> Optional[dict]:
-        pose_name = command.strip()
-
-        if not pose_name:
-            return None
-
-        for pose in self.poses:
-            if str(pose["name"]).strip() == pose_name:
-                return pose
-
-        return None
-
-    def call_switch_controller(
-        self,
-        activate_controllers=None,
-        deactivate_controllers=None,
-        label="switch controllers",
-    ) -> bool:
-        activate_controllers = activate_controllers or []
-        deactivate_controllers = deactivate_controllers or []
-
-        if not self.switch_controller_client.wait_for_service(timeout_sec=3.0):
-            self.get_logger().error("Controller switch service is not available")
-            return False
-
-        request = SwitchController.Request()
-        request.activate_controllers = list(activate_controllers)
-        request.deactivate_controllers = list(deactivate_controllers)
-
-        # BEST_EFFORT:
-        # Do not fail if a controller is already active/inactive.
-        if hasattr(request, "BEST_EFFORT"):
-            request.strictness = request.BEST_EFFORT
-        else:
-            request.strictness = 1
-
-        if hasattr(request, "activate_asap"):
-            request.activate_asap = True
-
-        timeout_s = float(self.get_parameter("controller_switch_timeout").value)
-
-        if hasattr(request, "timeout"):
-            request.timeout.sec = int(timeout_s)
-            request.timeout.nanosec = int((timeout_s - int(timeout_s)) * 1e9)
-
-        self.get_logger().info(
-            f"{label}: activate={activate_controllers}, "
-            f"deactivate={deactivate_controllers}, strictness=BEST_EFFORT"
-        )
-
-        future = self.switch_controller_client.call_async(request)
-
-        if not self.wait_future(future, timeout_s + 5.0, label):
-            return False
-
-        response = future.result()
-
-        if response is None:
-            self.get_logger().error(f"{label}: no response")
-            return False
-
-        if hasattr(response, "ok") and not response.ok:
-            self.get_logger().error(f"{label}: rejected by controller manager")
-            return False
-
-        self.get_logger().info(f"{label}: succeeded")
-        return True
-
-    def switch_to_trajectory_mode(self) -> bool:
-        return self.call_switch_controller(
-            deactivate_controllers=[self.servo_controller],
-            activate_controllers=[self.trajectory_controller],
-            label="switch to trajectory controller mode",
-        )
-
-    def switch_to_teleop_mode(self) -> bool:
-        if not self.call_switch_controller(
-            deactivate_controllers=[self.trajectory_controller],
-            activate_controllers=[self.servo_controller],
-            label="switch to teleop controller mode",
-        ):
-            return False
-
-        if not self.set_servo_command_type():
-            return False
-
-        return True
-
-    def set_servo_command_type(self) -> bool:
-        if not self.servo_command_type_client.wait_for_service(timeout_sec=3.0):
-            self.get_logger().error("Servo command-type service is not available")
-            return False
-
-        command_type = int(self.get_parameter("servo_command_type").value)
-
-        request = ServoCommandType.Request()
-        request.command_type = command_type
-
-        self.get_logger().info(
-            f"Setting MoveIt Servo command type: command_type={command_type}"
-        )
-
-        future = self.servo_command_type_client.call_async(request)
-
-        if not self.wait_future(future, 5.0, "set Servo command type"):
-            return False
-
-        response = future.result()
-
-        if response is None:
-            self.get_logger().error("Servo command-type service returned no response")
-            return False
-
-        if hasattr(response, "success") and not response.success:
-            self.get_logger().error("Servo command-type service rejected request")
-            return False
-
-        self.get_logger().info("Servo command type set")
-        return True
 
     def pose_to_pose_stamped(self, pose: dict) -> PoseStamped:
         target = PoseStamped()
@@ -723,11 +576,11 @@ Teleop mode:
 
         return goal
 
-    def execute_pose(self, pose: dict) -> bool:
+    def execute_pose(self, pose_name: str, pose: dict) -> bool:
         target_pose = self.pose_to_pose_stamped(pose)
 
         self.get_logger().info(
-            f"Executing pose {pose['name']}: "
+            f"Executing pose {pose_name}: "
             f"x={pose['x']:.4f}, y={pose['y']:.4f}, z={pose['z']:.4f}, "
             f"qx={pose['qx']:.4f}, qy={pose['qy']:.4f}, "
             f"qz={pose['qz']:.4f}, qw={pose['qw']:.4f}"
@@ -740,7 +593,7 @@ Teleop mode:
             return False
 
         self.get_logger().info("MoveGroup connected")
-        self.get_logger().info("During execution: press z to toggle image recording, p to record pose")
+        self.get_logger().info("During execution: press z to capture one image, p to record pose")
 
         goal = self.create_move_goal(target_pose)
         send_goal_future = self.movegroup_client.send_goal_async(goal)
@@ -781,7 +634,7 @@ Teleop mode:
             result = result_future.result()
 
             if result is not None and result.status == GoalStatus.STATUS_SUCCEEDED:
-                self.get_logger().info(f"Pose {pose['name']} executed successfully")
+                self.get_logger().info(f"{pose_name} executed successfully")
                 return True
 
             status = None if result is None else result.status
@@ -795,7 +648,7 @@ Teleop mode:
         with self.lock:
             msg = TwistStamped()
             msg.header.stamp = self.get_clock().now().to_msg()
-            msg.header.frame_id = self.frame_id
+            msg.header.frame_id = self.base_frame
 
             msg.twist.linear.x = self.current_twist.twist.linear.x
             msg.twist.linear.y = self.current_twist.twist.linear.y
@@ -816,6 +669,23 @@ Teleop mode:
             self.current_twist.twist.linear.y = y
             self.current_twist.twist.linear.z = z
 
+    def get_selected_gripper_close_position(self):
+        if self.selected_grasp_object == "sensor":
+            return self.gripper_sensor_close_position
+
+        return self.gripper_body_close_position
+
+    def toggle_grasp_object(self):
+        self.selected_grasp_object = (
+            "sensor"
+            if self.selected_grasp_object == "body"
+            else "body"
+        )
+
+        self.get_logger().info(
+            f"Selected grasp object: {self.selected_grasp_object} "
+        )
+
     def toggle_gripper(self):
         if self.gripper_busy:
             self.get_logger().warn("Gripper command already in progress")
@@ -828,16 +698,18 @@ Teleop mode:
         target_position = (
             self.gripper_open_position
             if self.gripper_is_closed
-            else self.gripper_close_position
+            else self.get_selected_gripper_close_position()
         )
         label = "open" if self.gripper_is_closed else "close"
+        selected_grasp_object = self.selected_grasp_object
 
         goal = ParallelGripperCommand.Goal()
         goal.command.position = [target_position]
 
         self.gripper_busy = True
         self.get_logger().info(
-            f"Gripper {label}: position={target_position:.4f}"
+            f"Gripper {label}: object={selected_grasp_object}, "
+            f"position={target_position:.4f}"
         )
 
         send_goal_future = self.gripper_client.send_goal_async(goal)
@@ -877,8 +749,8 @@ Teleop mode:
 
     def record_current_pose(self):
         now_s = self.now_s()
-
-        if (now_s - self.last_record_time_s) < self.record_debounce_s:
+        # self.record_debounce_s
+        if (now_s - self.last_record_time_s) < 0.5:
             self.get_logger().warn("Record ignored: debounce active")
             return
 
@@ -899,7 +771,7 @@ Teleop mode:
 
             row = {
                 "name": f"zone{counter}",
-                "id": counter,
+                "id": str(counter),
                 "x": t.x,
                 "y": t.y,
                 "z": t.z,
@@ -918,7 +790,7 @@ Teleop mode:
             self.reload_poses()
 
             self.get_logger().info(
-                f"Recorded pose {row['name']} (#{counter}): "
+                f"Recorded pose {row['name']}: "
                 f"x={t.x:.6f}, y={t.y:.6f}, z={t.z:.6f}, "
                 f"qx={q.x:.6f}, qy={q.y:.6f}, qz={q.z:.6f}, qw={q.w:.6f}"
             )
@@ -929,7 +801,7 @@ Teleop mode:
     def enter_teleop_mode(self):
         self.get_logger().info("Switching to teleop controller mode...")
 
-        if not self.switch_to_teleop_mode():
+        if not self.utils.switch_to_teleop_mode():
             self.get_logger().error("Could not switch to teleop mode")
             return
 
@@ -961,8 +833,10 @@ Teleop mode:
                     elif key == "g":
                         self.publish_stop()
                         self.toggle_gripper()
+                    elif key == "v":
+                        self.toggle_grasp_object()
                     elif key == "z":
-                        self.toggle_dataset_recording()
+                        self.capture_dataset_photo()
                     elif key == "p":
                         self.publish_stop()
                         self.record_current_pose()
@@ -1005,11 +879,15 @@ Teleop mode:
                 continue
 
             if command == "z":
-                self.toggle_dataset_recording()
+                self.capture_dataset_photo()
                 continue
 
             if command == "p":
                 self.record_current_pose()
+                continue
+
+            if command == "v":
+                self.toggle_grasp_object()
                 continue
 
             if command == "t":
@@ -1018,13 +896,14 @@ Teleop mode:
                 continue
 
             self.reload_poses()
-            pose = self.find_pose(command)
+            pose = self.utils.get_pose_by_id(command, log_level="warn")
+            pose_name = self.utils.get_name_by_id(command)
 
             if pose is None:
                 self.get_logger().warn(
-                    f"Unknown command or pose name: {command}. "
-                    f"Use 'l' to list poses, 't' for teleop, 'z' for images, "
-                    f"'p' for pose, or 'q' to quit."
+                    f"Unknown command or pose id: {command}. "
+                    f"Use 'l' to list poses, 't' for teleop, 'z' for one image, "
+                    f"'p' for pose, 'v' for grasp object, or 'q' to quit."
                 )
                 continue
 
@@ -1032,22 +911,17 @@ Teleop mode:
                 "Switching to trajectory controller mode before pose execution..."
             )
 
-            if not self.switch_to_trajectory_mode():
+            if not self.utils.switch_to_trajectory_mode():
                 self.get_logger().error("Could not switch to trajectory controller mode")
                 continue
 
-            self.execute_pose(pose)
+            self.execute_pose(pose_name, pose)
 
     def stop(self):
         self.running = False
         self.in_teleop = False
         self.publish_stop()
-
-        with self.dataset_lock:
-            should_stop_dataset = self.dataset_recording
-
-        if should_stop_dataset:
-            self.stop_dataset_recording()
+        self.finalize_dataset_archive()
 
 
 def parse_args(argv=None):
