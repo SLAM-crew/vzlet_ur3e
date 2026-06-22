@@ -1,4 +1,4 @@
-# DRIVERS
+### DRIVERS
 
 maybe: chmod 666 /dev/ttyUSB0
 
@@ -9,7 +9,7 @@ ros2 launch realsense2_camera rs_launch.py
 
 ros2 run vzlet_control pipeline.py --ros-args --params-file /home/sonieth2/vzlet_ur3e/ws/src/vzlet_control/config/params.yaml
 
-# SERVOING 
+### SERVOING 
 
 ros2 launch ur_moveit_config ur_moveit.launch.py ur_type:=ur3e launch_servo:=true
 
@@ -21,19 +21,13 @@ ros2 service call /servo_node/switch_command_type moveit_msgs/srv/ServoCommandTy
 
 ros2 run teleop_twist_keyboard teleop_twist_keyboard --ros-args --remap /cmd_vel:=/servo_node/delta_twist_cmds -p stamped:=true -p frame_id:=tool0 -p speed:=0.1 -p turn:=0.1
 
-# TOOLS
-
-ros2 run vzlet_control tool_aligner.py
-
-ros2 run vzlet_control circle_centering.py
-
-# SWITCH CONTROLLERS BACK from servoing mode
+### SWITCH CONTROLLERS BACK from servoing mode
 
 ros2 control switch_controllers --deactivate forward_position_controller 
 
 ros2 control switch_controllers --activate joint_trajectory_controller
 
-# CALIBRATE RGB-CAMERA for 640*480
+### CALIBRATE RGB-CAMERA for 640*480
 
 ros2 run camera_calibration cameracalibrator --size 8x6 --square 0.0576 image:=/camera/camera/color/image_raw --no-service-check
 
@@ -42,3 +36,10 @@ D = [0.14193836041770494, -0.14988864561584977, 0.008163330806507066, -0.0043868
 K = [581.804444608261, 0.0, 307.3027114553363, 0.0, 581.5587256061488, 267.067489208453, 0.0, 0.0, 1.0]
 R = [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0]
 P = [602.8733520507812, 0.0, 304.54903207070674, 0.0, 0.0, 600.6067504882812, 269.79144515798725, 0.0, 0.0, 0.0, 1.0, 0.0]
+
+### IF `joint_trajectory_controller` is gone 
+```bash
+ros2 control load_controller joint_trajectory_controller
+ros2 control set_controller_state joint_trajectory_controller inactive
+ros2 control set_controller_state joint_trajectory_controller active
+```

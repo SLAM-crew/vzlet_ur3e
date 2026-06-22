@@ -209,7 +209,8 @@ def launch_setup(context):
         "tcp_pose_broadcaster",
         "ur_configuration_controller",
         "friction_model_controller",
-        "gripper_controller",
+        # "gripper_controller",
+        "gpio_controller",
     ]
     controllers_inactive = [
         "scaled_joint_trajectory_controller",
