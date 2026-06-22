@@ -23,6 +23,7 @@ install(
   scripts/pipeline_motion.py
   scripts/pipeline_vision.py
   scripts/pipeline_utils.py
+  scripts/base_node.py
   DESTINATION lib/${PROJECT_NAME}
 )
 

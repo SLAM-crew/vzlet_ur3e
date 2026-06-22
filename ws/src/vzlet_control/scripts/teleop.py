@@ -11,83 +11,40 @@ import tty
 import zipfile
 from datetime import datetime
 from pathlib import Path
-from typing import Optional
 
 import cv2
 import rclpy
-from action_msgs.msg import GoalStatus
 from control_msgs.action import ParallelGripperCommand
-from cv_bridge import CvBridge
-from geometry_msgs.msg import PoseStamped, TwistStamped
-from moveit_msgs.action import MoveGroup
-from moveit_msgs.msg import (
-    BoundingVolume,
-    Constraints,
-    MotionPlanRequest,
-    OrientationConstraint,
-    PositionConstraint,
-)
-from rclpy.action import ActionClient
+from geometry_msgs.msg import TwistStamped
 from rclpy.executors import MultiThreadedExecutor
-from rclpy.node import Node
 from sensor_msgs.msg import Image
-from shape_msgs.msg import SolidPrimitive
-from tf2_ros import Buffer, TransformListener
 
-from pipeline_utils import PipelineUtils
+from base_node import BaseRobotNode
 from pipeline_motion import MotionController
+from pipeline_utils import PipelineUtils
 
 CSV_HEADERS = ["name", "id", "x", "y", "z", "qx", "qy", "qz", "qw"]
 
-class TrajectoryTeleopCommander(Node):
+class TrajectoryTeleopCommander(BaseRobotNode):
 
     def __init__(self, csv_file: str):
         super().__init__("trajectory_teleop_commander")
-        
+
         self.use_background_executor = True
-
-        self.declare_parameter("base_frame", "world")
-        self.declare_parameter("tool_frame", "tool0")
-
-        self.declare_parameter("move_action", "/move_action")
-        self.declare_parameter("group_name", "ur_manipulator")
-        self.declare_parameter("planner_id", "RRTConnect")
-        self.declare_parameter("pipeline_id", "ompl")
-        self.declare_parameter("planning_attempts", 10)
-        self.declare_parameter("allowed_planning_time", 5.0)
-        self.declare_parameter("velocity_scaling", 0.2)
-        self.declare_parameter("acceleration_scaling", 0.2)
-        self.declare_parameter("position_tolerance", 0.001)
-        self.declare_parameter("orientation_tolerance", 0.01)
+        self.csv_file = Path(csv_file)
 
         self.declare_parameter("servo_topic", "/servo_node/delta_twist_cmds")
         self.declare_parameter("linear_speed", 0.4)
         self.declare_parameter("publish_rate", 30.0)
-
-        self.declare_parameter(
-            "controller_switch_service",
-            "/controller_manager/switch_controller",
-        )
-        self.declare_parameter("trajectory_controller", "joint_trajectory_controller")
-        self.declare_parameter("servo_controller", "forward_position_controller")
-        self.declare_parameter("controller_switch_timeout", 5.0)
-
-        self.declare_parameter(
-            "servo_command_type_service",
-            "/servo_node/switch_command_type",
-        )
-        self.declare_parameter("servo_command_type", 1)
-
-        self.declare_parameter("gripper_action", "/gripper_controller/gripper_cmd")
-        self.declare_parameter("gripper_body_close_position", 0.011)
-        self.declare_parameter("gripper_sensor_close_position", 0.016)
-        self.declare_parameter("gripper_open_position", 0.006)
-
-        # Dataset snapshot parameters.
-        self.declare_parameter("image_topic", "/camera/camera/color/image_raw")
         self.declare_parameter("output_dir", "dataset_output")
 
-        self.csv_file = Path(csv_file)
+        self.servo_topic = str(self.get_parameter("servo_topic").value)
+        self.linear_speed = float(self.get_parameter("linear_speed").value)
+        self.publish_rate = float(self.get_parameter("publish_rate").value)
+        self.output_dir = Path(str(self.get_parameter("output_dir").value))
+
+        self.output_dir.mkdir(parents=True, exist_ok=True)
+
         self.utils = PipelineUtils(self)
         self.motion = MotionController(self)
 
@@ -96,26 +53,7 @@ class TrajectoryTeleopCommander(Node):
         except Exception as exc:
             self.get_logger().error(f"Could not load zone poses: {exc}")
 
-        self.base_frame = str(self.get_parameter("base_frame").value)
-        self.tool_frame = str(self.get_parameter("tool_frame").value)
-
-        self.servo_topic = str(self.get_parameter("servo_topic").value)
-        self.linear_speed = float(self.get_parameter("linear_speed").value)
-        self.publish_rate = float(self.get_parameter("publish_rate").value)
-
-        self.trajectory_controller = str(self.get_parameter("trajectory_controller").value)
-        self.servo_controller = str(self.get_parameter("servo_controller").value)
-
-        self.gripper_action = str(self.get_parameter("gripper_action").value)
-        self.gripper_body_close_position = float(self.get_parameter("gripper_body_close_position").value)
-        self.gripper_sensor_close_position = float(self.get_parameter("gripper_sensor_close_position").value)
-        self.gripper_open_position = float(self.get_parameter("gripper_open_position").value)
         self.selected_grasp_object = "body"
-
-        self.image_topic = str(self.get_parameter("image_topic").value)
-        self.output_dir = Path(str(self.get_parameter("output_dir").value))
-
-        self.output_dir.mkdir(parents=True, exist_ok=True)
 
         self.running = True
         self.in_teleop = False
@@ -129,7 +67,6 @@ class TrajectoryTeleopCommander(Node):
         self.current_twist.header.frame_id = self.base_frame
         self.lock = threading.Lock()
 
-        self.bridge = CvBridge()
         self.dataset_lock = threading.Lock()
         self.dataset_dir = None
         self.zip_path = None
@@ -138,9 +75,6 @@ class TrajectoryTeleopCommander(Node):
         self.latest_image_stamp = None
         self.last_snapshot_time_s = 0.0
         self.dataset_archived = False
-
-        self.tf_buffer = Buffer()
-        self.tf_listener = TransformListener(self.tf_buffer, self)
 
         self.servo_pub = self.create_publisher(
             TwistStamped,
@@ -153,18 +87,6 @@ class TrajectoryTeleopCommander(Node):
             self.image_topic,
             self.image_callback,
             10,
-        )
-
-        self.movegroup_client = ActionClient(
-            self,
-            MoveGroup,
-            str(self.get_parameter("move_action").value),
-        )
-
-        self.gripper_client = ActionClient(
-            self,
-            ParallelGripperCommand,
-            self.gripper_action,
         )
 
         self.publish_timer = self.create_timer(
@@ -213,7 +135,7 @@ class TrajectoryTeleopCommander(Node):
             return True
 
         if key == "p":
-            self.utils.save_pose_to_csv()
+            self.save_pose_to_csv()
             return True
 
         if key == "v":
@@ -365,6 +287,70 @@ class TrajectoryTeleopCommander(Node):
     def get_next_counter(self):
         self.reload_poses()
         return len(self.utils.poses) + 1
+
+    @staticmethod
+    def ensure_trailing_newline(path: Path):
+        if not path.exists() or path.stat().st_size == 0:
+            return
+
+        with path.open("rb") as f:
+            f.seek(-1, 2)
+            last_char = f.read(1)
+
+        if last_char != b"\n":
+            with path.open("a", newline="") as f:
+                f.write("\n")
+
+    def save_pose_to_csv(self):
+        now_s = self.now_s()
+
+        if (now_s - self.last_record_time_s) < 0.5:
+            self.get_logger().warn("Record ignored: debounce active")
+            return
+
+        self.last_record_time_s = now_s
+
+        try:
+            transform = self.tf_buffer.lookup_transform(
+                self.base_frame,
+                self.tool_frame,
+                rclpy.time.Time(),
+                timeout=rclpy.duration.Duration(seconds=0.2),
+            )
+
+            t = transform.transform.translation
+            q = transform.transform.rotation
+
+            counter = self.get_next_counter()
+
+            row = {
+                "name": f"zone{counter}",
+                "id": str(counter),
+                "x": t.x,
+                "y": t.y,
+                "z": t.z,
+                "qx": q.x,
+                "qy": q.y,
+                "qz": q.z,
+                "qw": q.w,
+            }
+
+            self.ensure_trailing_newline(self.csv_file)
+
+            with self.csv_file.open("a", newline="") as f:
+                writer = csv.DictWriter(f, fieldnames=CSV_HEADERS)
+                writer.writerow(row)
+
+            self.reload_poses()
+
+            self.get_logger().info(
+                f"Recorded pose {row['name']}: "
+                f"x={t.x:.6f}, y={t.y:.6f}, z={t.z:.6f}, "
+                f"qx={q.x:.6f}, qy={q.y:.6f}, qz={q.z:.6f}, qw={q.w:.6f}"
+            )
+
+        except Exception as exc:
+            self.get_logger().warn(f"TF lookup failed, pose not recorded: {exc}")
 
     def print_main_menu(self):
         print(
@@ -674,7 +660,7 @@ Teleop mode:
                         self.capture_dataset_photo()
                     elif key == "p":
                         self.publish_stop()
-                        self.utils.save_pose_to_csv()
+                        self.save_pose_to_csv()
                     elif key == "t":
                         self.publish_stop()
                         self.in_teleop = False
@@ -718,7 +704,7 @@ Teleop mode:
                 continue
 
             if command == "p":
-                self.utils.save_pose_to_csv()
+                self.save_pose_to_csv()
                 continue
 
             if command == "v":

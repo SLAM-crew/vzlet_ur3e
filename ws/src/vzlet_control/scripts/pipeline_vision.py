@@ -213,7 +213,7 @@ class VisionProcessor:
             return None
 
     def _get_next_bgr_frame(self, last_seq: int, timeout_s: float):
-        start_s = self.utils.now_s()
+        start_s = self.node.utils.now_s()
 
         while rclpy.ok():
             rclpy.spin_once(self.node, timeout_sec=0.05)
@@ -225,7 +225,7 @@ class VisionProcessor:
                     self.latest_image_header,
                 )
 
-            if (self.utils.now_s() - start_s) > timeout_s:
+            if (self.node.utils.now_s() - start_s) > timeout_s:
                 return None, last_seq, None
 
         return None, last_seq, None
@@ -510,7 +510,7 @@ class VisionProcessor:
             if not candidates:
                 self.node.get_logger().error(
                     f"Vote failed because no '{target_class_name}' class was detected. "
-                    f"{target_class_name} storage is empty."
+                    f"That storage is empty."
                 )
                 return None, None
 
@@ -592,7 +592,7 @@ class VisionProcessor:
         if not candidates:
             self.node.get_logger().error(
                 f"Vote failed because no '{target_class_name}' class was detected. "
-                f"{target_class_name} storage is empty."
+                f"That storage is empty."
             )
             return None, None
         

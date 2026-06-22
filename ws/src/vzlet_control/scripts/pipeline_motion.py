@@ -45,10 +45,10 @@ class MotionController:
         base_frame = self.node.get_parameter("base_frame").value
         tool_frame = self.node.get_parameter("tool_frame").value
 
-        start_s = self.utils.now_s()
+        start_s = self.node.utils.now_s()
         last_error = None
 
-        while rclpy.ok() and (self.utils.now_s() - start_s) < timeout_s:
+        while rclpy.ok() and (self.node.utils.now_s() - start_s) < timeout_s:
             try:
                 tf_base_tool = self.node.tf_buffer.lookup_transform(
                     base_frame,
@@ -318,13 +318,13 @@ class MotionController:
                 "Pneumatic gripper: waiting for /gpio_controller/commands subscriber"
             )
 
-            start_s = self.utils.now_s()
+            start_s = self.node.utils.now_s()
             timeout_s = 3.0
 
             while (
                 rclpy.ok()
                 and self.pneumatic_gripper_pub.get_subscription_count() < 1
-                and (self.utils.now_s() - start_s) < timeout_s
+                and (self.node.utils.now_s() - start_s) < timeout_s
             ):
                 rclpy.spin_once(self.node, timeout_sec=0.05)
 
