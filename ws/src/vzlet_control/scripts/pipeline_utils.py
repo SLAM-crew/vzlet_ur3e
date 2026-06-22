@@ -5,7 +5,9 @@ from moveit_msgs.srv import ServoCommandType
 import csv
 from pathlib import Path
 from typing import Optional
+from geometry_msgs.msg import PoseStamped
 
+CSV_HEADERS = ["name", "id", "x", "y", "z", "qx", "qy", "qz", "qw"]
 
 class PipelineUtils:
     def __init__(self, node):
@@ -191,6 +193,9 @@ class PipelineUtils:
         )
         return None
     
+    def now_s(self):
+        return self.get_clock().now().nanoseconds * 1e-9
+    
     def _log(self, log_level: str, message: str):
         logger = self.node.get_logger()
 
@@ -201,32 +206,107 @@ class PipelineUtils:
         else:
             logger.error(message)
 
-    ########################################################
+    def save_pose_to_csv(self):
+        now_s = self.now_s()
+        # self.record_debounce_s
+        if (now_s - self.last_record_time_s) < 0.5:
+            self.get_logger().warn("Record ignored: debounce active")
+            return
 
-    def wait_future(self, future, timeout_s, label: str) -> bool:
-        executor = getattr(self.node, "executor", None)
+        self.last_record_time_s = now_s
 
-        if executor is None:
-            rclpy.spin_until_future_complete(
-                self.node,
-                future,
-                timeout_sec=timeout_s,
+        try:
+            transform = self.tf_buffer.lookup_transform(
+                self.base_frame,
+                self.tool_frame,
+                rclpy.time.Time(),
+                timeout=rclpy.duration.Duration(seconds=0.2),
             )
 
-            if not future.done():
-                self.node.get_logger().error(f"{label}: timed out")
-                return False
+            t = transform.transform.translation
+            q = transform.transform.rotation
 
-            return True
+            counter = self.get_next_counter()
+
+            row = {
+                "name": f"zone{counter}",
+                "id": str(counter),
+                "x": t.x,
+                "y": t.y,
+                "z": t.z,
+                "qx": q.x,
+                "qy": q.y,
+                "qz": q.z,
+                "qw": q.w,
+            }
+
+            self.utils.ensure_trailing_newline(self.csv_file)
+
+            with self.csv_file.open("a", newline="") as f:
+                writer = csv.DictWriter(f, fieldnames=CSV_HEADERS)
+                writer.writerow(row)
+
+            self.reload_poses()
+
+            self.get_logger().info(
+                f"Recorded pose {row['name']}: "
+                f"x={t.x:.6f}, y={t.y:.6f}, z={t.z:.6f}, "
+                f"qx={q.x:.6f}, qy={q.y:.6f}, qz={q.z:.6f}, qw={q.w:.6f}"
+            )
+
+        except Exception as exc:
+            self.get_logger().warn(f"TF lookup failed, pose not recorded: {exc}")
+
+    
+    def ensure_trailing_newline(path: Path):
+        if not path.exists() or path.stat().st_size == 0:
+            return
+
+        with path.open("rb") as f:
+            f.seek(-1, 2)
+            last_char = f.read(1)
+
+        if last_char != b"\n":
+            with path.open("a", newline="") as f:
+                f.write("\n")
+
+    def pose_to_pose_stamped(self, pose: dict) -> PoseStamped:
+        target = PoseStamped()
+        target.header.frame_id = self.node.base_frame
+        target.header.stamp = self.node.get_clock().now().to_msg()
+
+        target.pose.position.x = pose["x"]
+        target.pose.position.y = pose["y"]
+        target.pose.position.z = pose["z"]
+
+        target.pose.orientation.x = pose["qx"]
+        target.pose.orientation.y = pose["qy"]
+        target.pose.orientation.z = pose["qz"]
+        target.pose.orientation.w = pose["qw"]
+
+        return target
+    
+    ########################################################
+
+    def wait_future(self, future, timeout_s, label: str, tick_fn=None) -> bool:
+        use_background_executor = bool(
+            getattr(self.node, "use_background_executor", False)
+        )
 
         start_s = time.monotonic()
 
         while rclpy.ok() and not future.done():
+            if tick_fn is not None:
+                tick_fn()
+
             if timeout_s is not None and (time.monotonic() - start_s) > timeout_s:
                 self.node.get_logger().error(f"{label}: timed out")
                 return False
 
-            time.sleep(0.01)
+            if use_background_executor:
+                time.sleep(0.01)
+            else:
+                rclpy.spin_once(self.node, timeout_sec=0.01)
 
         return future.done()
 

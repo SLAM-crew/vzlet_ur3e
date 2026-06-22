@@ -1,0 +1,24 @@
+controller_manager:
+  ros__parameters:
+    update_rate: 50
+
+    joint_state_broadcaster:
+      type: joint_state_broadcaster/JointStateBroadcaster
+
+    gpio_controller:
+      type: gpio_controllers/GpioCommandController
+
+gpio_controller:
+  ros__parameters:
+    gpios:
+      - suction_gripper
+
+    command_interfaces:
+      suction_gripper:
+        - interfaces:
+            - state
+
+    state_interfaces:
+      suction_gripper:
+        - interfaces:
+            - state

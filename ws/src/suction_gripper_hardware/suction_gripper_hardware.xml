@@ -1,0 +1,10 @@
+<library path="suction_gripper_system">
+  <class
+    name="suction_gripper_hardware/SuctionGripperSystem"
+    type="suction_gripper_hardware::SuctionGripperSystem"
+    base_class_type="hardware_interface::SystemInterface">
+    <description>
+      ros2_control hardware interface for a UART-controlled suction gripper.
+    </description>
+  </class>
+</library>

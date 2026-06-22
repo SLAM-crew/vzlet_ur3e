@@ -29,14 +29,20 @@ class IntegratedPickPipeline(Node):
         self.declare_parameter("zone_pose_csv", "/home/sonieth2/vzlet_ur3e/ws/zone_poses_floor.csv")
 
         # MoveIt config.
-        self.declare_parameter("planner_id", "RRTConnect")
         self.declare_parameter("pipeline_id", "ompl")
+        self.declare_parameter("planner_id", "RRTConnect")
+        self.declare_parameter("pilz_pipeline_id", "pilz_industrial_motion_planner")
+        self.declare_parameter("pilz_planner_id", "LIN")
         self.declare_parameter("planning_attempts", 10)
         self.declare_parameter("allowed_planning_time", 5.0)
-        self.declare_parameter("velocity_scaling", 0.5)
-        self.declare_parameter("acceleration_scaling", 0.1)
+
+        self.declare_parameter("pilz_velocity_scaling", 0.6)
+        self.declare_parameter("pilz_acceleration_scaling", 0.15)
+        self.declare_parameter("ompl_velocity_scaling", 0.5)
+        self.declare_parameter("ompl_acceleration_scaling", 0.1)
+
         self.declare_parameter("position_tolerance", 0.001)
-        self.declare_parameter("orientation_tolerance", 0.01)
+        self.declare_parameter("orientation_tolerance", 0.005)
 
         # Collision objects.
         self.declare_parameter("add_ground_plane", True)
@@ -61,13 +67,15 @@ class IntegratedPickPipeline(Node):
         self.declare_parameter("cy", 269.791445)
 
         # Circle detection.
-        self.declare_parameter("yolo_model_path", "/home/sonieth2/vzlet_ur3e/ws/models/vzlet_ver7.pt")
+        self.declare_parameter("yolo_model_path", "/home/sonieth2/vzlet_ur3e/ws/models/vzlet_ver8.pt")
 
         # Grasp.
         # TODO: tune these parameters and remove hardcoding
         self.declare_parameter("z_offset_body", 0.165)
         self.declare_parameter("z_offset_sensor_pick", 0.15)
         self.declare_parameter("z_offset_sensor_place", 0.18)
+        self.declare_parameter("z_offset_piezo", 0.1525)
+
 
         self.declare_parameter("gripper_body_close_position", 0.011)
         self.declare_parameter("gripper_sensor_close_position", 0.016)
@@ -126,16 +134,16 @@ class IntegratedPickPipeline(Node):
         )
         if pose_name is None:
             return False
-        return self.motion.move_to_zone(pose_name)
+        return self.motion.move_to_zone(pose_name, "z_ground")
 
     def run_pipeline(self) -> bool:
         self.get_logger().info("Waiting for MoveGroup action server...")
         self.movegroup_client.wait_for_server()
         self.get_logger().info("MoveGroup connected")
 
-        self.get_logger().info("Waiting for gripper action server...")
-        self.gripper_client.wait_for_server()
-        self.get_logger().info("Gripper connected")
+        # self.get_logger().info("Waiting for gripper action server...")
+        # self.gripper_client.wait_for_server()
+        # self.get_logger().info("Gripper connected")
 
         if bool(self.get_parameter("add_ground_plane").value):
             self.publish_ground_plane()
@@ -152,18 +160,22 @@ class IntegratedPickPipeline(Node):
             return False
 
         stages = [
-        ("pick zone: body", lambda: self.motion.move_to_zone("BODY_PICK_ZONE")),
-        ("tool alignment", lambda: self.motion.align_tool_to_ground()),
-        ("voted grid pose: body", lambda: self.move_to_voted_grid_pose("body")),
-        ("grasp-pick: body", lambda: self.motion.execute_grasp_sequence("ACTION_PICK", "body")), 
-        ("body cell zone", lambda: self.motion.move_to_zone("BODY_CELL_ZONE")),
-        ("grasp-place: body", lambda: self.motion.execute_grasp_sequence("ACTION_PLACE", "body")),
-        ("pick zone: sensor", lambda: self.motion.move_to_zone("SENSOR_PICK_ZONE")),
-        ("tool alignment", lambda: self.motion.align_tool_to_ground()),
-        ("voted grid pose: sensor", lambda: self.move_to_voted_grid_pose("sensor")),
-        ("grasp-pick: sensor", lambda: self.motion.execute_grasp_sequence("ACTION_PICK", "sensor")),
-        ("body cell zone", lambda: self.motion.move_to_zone("BODY_CELL_ZONE")),
-        ("grasp-place: sensor", lambda: self.motion.execute_grasp_sequence("ACTION_PLACE", "sensor")),
+        # ("pick zone: body", lambda: self.motion.move_to_zone("BODY_PICK_ZONE", constraint="z_ground")),
+        # ("tool alignment", lambda: self.motion.align_tool_to_ground()),
+        # ("voted grid pose: body", lambda: self.move_to_voted_grid_pose("body")),
+        # ("grasp-pick: body", lambda: self.motion.execute_grasp_sequence("ACTION_PICK", "body")), 
+        # ("body cell zone", lambda: self.motion.move_to_zone("BODY_CELL_ZONE")),
+        # ("grasp-place: body", lambda: self.motion.execute_grasp_sequence("ACTION_PLACE", "body")),
+        ("sensor pick zone", lambda: self.motion.move_to_zone("SENSOR_PICK_ZONE", constraint="z_ground")),
+        ("voted grid pose: piezo", lambda: self.move_to_voted_grid_pose("piezo")),
+        ("grasp-pick: piezo", lambda: self.motion.execute_pneumatic_grasp_sequence("ACTION_PICK")),
+        ("grasp-place: piezo", lambda: self.motion.execute_pneumatic_grasp_sequence("ACTION_PLACE")),
+
+        # ("tool alignment", lambda: self.motion.align_tool_to_ground()),
+        # ("voted grid pose: sensor", lambda: self.move_to_voted_grid_pose("sensor")),
+        # ("grasp-pick: sensor", lambda: self.motion.execute_grasp_sequence("ACTION_PICK", "sensor")),
+        # ("body cell zone", lambda: self.motion.move_to_zone("BODY_CELL_ZONE", constraint="z_ground")),
+        # ("grasp-place: sensor", lambda: self.motion.execute_grasp_sequence("ACTION_PLACE", "sensor")),
 
     ]
 
@@ -171,7 +183,7 @@ class IntegratedPickPipeline(Node):
             self.get_logger().info(f"=== Starting stage: {name} ===")
             ok = fn()
             if not ok:
-                self.get_logger().error(f"Pipeline stopped: stage failed: {name}")
+                self.get_logger().error(f"Stage failed: {name}")
                 return False
             self.get_logger().info(f"=== Finished stage: {name} ===")
             time.sleep(0.5)
@@ -205,9 +217,6 @@ class IntegratedPickPipeline(Node):
         self.scene_pub.publish(scene)
         self.get_logger().info("Ground plane added")
         time.sleep(1.0)
-    
-    def now_s(self):
-        return self.get_clock().now().nanoseconds * 1e-9
 
 def main():
     rclpy.init()

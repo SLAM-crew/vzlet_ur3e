@@ -35,58 +35,16 @@ from shape_msgs.msg import SolidPrimitive
 from tf2_ros import Buffer, TransformListener
 
 from pipeline_utils import PipelineUtils
+from pipeline_motion import MotionController
 
 CSV_HEADERS = ["name", "id", "x", "y", "z", "qx", "qy", "qz", "qw"]
-
-def normalize_row(row):
-    return {
-        (key or "").strip(): (value.strip() if isinstance(value, str) else value)
-        for key, value in row.items()
-        if key is not None
-    }
-
-
-def read_rows(path: Path):
-    if not path.exists():
-        return [], []
-
-    with path.open("r", newline="") as f:
-        reader = csv.DictReader(f)
-        fieldnames = reader.fieldnames or []
-        rows = [normalize_row(row) for row in reader]
-
-    return fieldnames, rows
-
-
-def ensure_trailing_newline(path: Path):
-    if not path.exists() or path.stat().st_size == 0:
-        return
-
-    with path.open("rb") as f:
-        f.seek(-1, 2)
-        last_char = f.read(1)
-
-    if last_char != b"\n":
-        with path.open("a", newline="") as f:
-            f.write("\n")
-
-
-def ensure_csv_exists(path: Path):
-    if path.exists():
-        ensure_trailing_newline(path)
-        return
-
-    path.parent.mkdir(parents=True, exist_ok=True)
-
-    with path.open("w", newline="") as f:
-        writer = csv.DictWriter(f, fieldnames=CSV_HEADERS)
-        writer.writeheader()
-
 
 class TrajectoryTeleopCommander(Node):
 
     def __init__(self, csv_file: str):
         super().__init__("trajectory_teleop_commander")
+        
+        self.use_background_executor = True
 
         self.declare_parameter("base_frame", "world")
         self.declare_parameter("tool_frame", "tool0")
@@ -129,7 +87,10 @@ class TrajectoryTeleopCommander(Node):
         self.declare_parameter("image_topic", "/camera/camera/color/image_raw")
         self.declare_parameter("output_dir", "dataset_output")
 
-        self.csv_file = Path(csv_file);ensure_csv_exists(self.csv_file);self.utils = PipelineUtils(self)
+        self.csv_file = Path(csv_file)
+        self.utils = PipelineUtils(self)
+        self.motion = MotionController(self)
+
         try:
             self.utils.load_csv_poses(str(self.csv_file))
         except Exception as exc:
@@ -224,30 +185,6 @@ class TrajectoryTeleopCommander(Node):
         )
         self.get_logger().info("Pose hotkey: p records current EEF pose")
 
-    def now_s(self):
-        return self.get_clock().now().nanoseconds * 1e-9
-
-    def wait_future(
-        self,
-        future,
-        timeout_s: Optional[float],
-        label: str,
-        allow_hotkeys: bool = False,
-    ) -> bool:
-        start_s = time.monotonic()
-
-        while rclpy.ok() and not future.done():
-            if allow_hotkeys:
-                self.process_pending_global_hotkeys()
-
-            if timeout_s is not None and (time.monotonic() - start_s) > timeout_s:
-                self.get_logger().error(f"{label}: timed out")
-                return False
-
-            time.sleep(0.01)
-
-        return future.done()
-
     def enable_keyboard_hotkeys(self):
         if not sys.stdin.isatty():
             return None
@@ -276,7 +213,7 @@ class TrajectoryTeleopCommander(Node):
             return True
 
         if key == "p":
-            self.record_current_pose()
+            self.utils.save_pose_to_csv()
             return True
 
         if key == "v":
@@ -376,11 +313,11 @@ class TrajectoryTeleopCommander(Node):
                 saved_count = self.saved_count
 
             self.get_logger().info(
-                f"Saved snapshot #{saved_count}: {filepath}"
+                f"Saved photo #{saved_count}: {filepath}"
             )
 
         except Exception as exc:
-            self.get_logger().error(f"Failed to save snapshot: {exc}")
+            self.get_logger().error(f"Failed to save photo: {exc}")
 
     def finalize_dataset_archive(self):
         with self.dataset_lock:
@@ -493,154 +430,93 @@ Teleop mode:
             )
         print("")
 
+    # def execute_pose(self, pose_name: str, pose: dict) -> bool:
+    #     target_pose = self.utils.pose_to_pose_stamped(pose)
 
-    def pose_to_pose_stamped(self, pose: dict) -> PoseStamped:
-        target = PoseStamped()
-        target.header.frame_id = self.base_frame
-        target.header.stamp = self.get_clock().now().to_msg()
+    #     self.get_logger().info(
+    #         f"Executing pose {pose_name}: "
+    #         f"x={pose['x']:.4f}, y={pose['y']:.4f}, z={pose['z']:.4f}, "
+    #         f"qx={pose['qx']:.4f}, qy={pose['qy']:.4f}, "
+    #         f"qz={pose['qz']:.4f}, qw={pose['qw']:.4f}"
+    #     )
 
-        target.pose.position.x = pose["x"]
-        target.pose.position.y = pose["y"]
-        target.pose.position.z = pose["z"]
+    #     self.get_logger().info("Waiting for MoveGroup action server...")
 
-        target.pose.orientation.x = pose["qx"]
-        target.pose.orientation.y = pose["qy"]
-        target.pose.orientation.z = pose["qz"]
-        target.pose.orientation.w = pose["qw"]
+    #     if not self.movegroup_client.wait_for_server(timeout_sec=10.0):
+    #         self.get_logger().error("MoveGroup action server is not available")
+    #         return False
 
-        return target
+    #     self.get_logger().info("MoveGroup connected")
+    #     self.get_logger().info("During execution: press z to capture one image, p to record pose")
 
-    def create_move_goal(self, target_pose: PoseStamped) -> MoveGroup.Goal:
-        goal = MoveGroup.Goal()
-        request = MotionPlanRequest()
+    #     goal = self.create_move_goal(target_pose)
+    #     send_goal_future = self.movegroup_client.send_goal_async(goal)
 
-        request.group_name = self.get_parameter("group_name").value
-        request.pipeline_id = str(self.get_parameter("pipeline_id").value)
-        request.planner_id = str(self.get_parameter("planner_id").value)
-        request.num_planning_attempts = int(
-            self.get_parameter("planning_attempts").value
-        )
-        request.allowed_planning_time = float(
-            self.get_parameter("allowed_planning_time").value
-        )
-        request.max_velocity_scaling_factor = float(
-            self.get_parameter("velocity_scaling").value
-        )
-        request.max_acceleration_scaling_factor = float(
-            self.get_parameter("acceleration_scaling").value
-        )
+    #     old_settings = self.enable_keyboard_hotkeys()
 
-        constraints = Constraints()
+    #     try:
+    #         if not self.utils.wait_future(
+    #             send_goal_future,
+    #             30.0,
+    #             "wait for MoveGroup goal acceptance",
+    #             tick_fn=self.process_pending_global_hotkeys,
+    #         ):
+    #             return False
 
-        position_constraint = PositionConstraint()
-        position_constraint.header.frame_id = self.base_frame
-        position_constraint.link_name = self.tool_frame
+    #         goal_handle = send_goal_future.result()
 
-        primitive = SolidPrimitive()
-        primitive.type = SolidPrimitive.SPHERE
-        primitive.dimensions = [
-            float(self.get_parameter("position_tolerance").value)
-        ]
+    #         if goal_handle is None:
+    #             self.get_logger().error("Goal handle is None")
+    #             return False
 
-        volume = BoundingVolume()
-        volume.primitives.append(primitive)
-        volume.primitive_poses.append(target_pose.pose)
+    #         if not goal_handle.accepted:
+    #             self.get_logger().error("Goal rejected")
+    #             return False
 
-        position_constraint.constraint_region = volume
-        position_constraint.weight = 1.0
+    #         self.get_logger().info("Goal accepted, waiting for execution to finish...")
 
-        orientation_constraint = OrientationConstraint()
-        orientation_constraint.header.frame_id = self.base_frame
-        orientation_constraint.link_name = self.tool_frame
-        orientation_constraint.orientation = target_pose.pose.orientation
+    #         result_future = goal_handle.get_result_async()
 
-        orientation_tolerance = float(
-            self.get_parameter("orientation_tolerance").value
-        )
-        orientation_constraint.absolute_x_axis_tolerance = orientation_tolerance
-        orientation_constraint.absolute_y_axis_tolerance = orientation_tolerance
-        orientation_constraint.absolute_z_axis_tolerance = orientation_tolerance
-        orientation_constraint.weight = 1.0
+    #         if not self.utils.wait_future(
+    #             result_future,
+    #             300.0,
+    #             "wait for MoveGroup execution result",
+    #             tick_fn=self.process_pending_global_hotkeys,
+    #         ):
+    #             return False
 
-        constraints.position_constraints.append(position_constraint)
-        constraints.orientation_constraints.append(orientation_constraint)
+    #         result = result_future.result()
 
-        request.goal_constraints.append(constraints)
+    #         if result is not None and result.status == GoalStatus.STATUS_SUCCEEDED:
+    #             self.get_logger().info(f"{pose_name} executed successfully")
+    #             return True
 
-        goal.request = request
-        goal.planning_options.plan_only = False
-        goal.planning_options.replan = True
-        goal.planning_options.replan_attempts = 2
-        goal.planning_options.planning_scene_diff.is_diff = True
-        goal.planning_options.planning_scene_diff.robot_state.is_diff = True
+    #         status = None if result is None else result.status
+    #         self.get_logger().error(f"Pose execution failed with status: {status}")
+    #         return False
 
-        return goal
+    #     finally:
+    #         self.restore_keyboard_hotkeys(old_settings)
+
 
     def execute_pose(self, pose_name: str, pose: dict) -> bool:
-        target_pose = self.pose_to_pose_stamped(pose)
-
         self.get_logger().info(
-            f"Executing pose {pose_name}: "
-            f"x={pose['x']:.4f}, y={pose['y']:.4f}, z={pose['z']:.4f}, "
-            f"qx={pose['qx']:.4f}, qy={pose['qy']:.4f}, "
-            f"qz={pose['qz']:.4f}, qw={pose['qw']:.4f}"
+            "During execution: press z to capture one image, p to record pose"
         )
-
-        self.get_logger().info("Waiting for MoveGroup action server...")
-
-        if not self.movegroup_client.wait_for_server(timeout_sec=10.0):
-            self.get_logger().error("MoveGroup action server is not available")
-            return False
-
-        self.get_logger().info("MoveGroup connected")
-        self.get_logger().info("During execution: press z to capture one image, p to record pose")
-
-        goal = self.create_move_goal(target_pose)
-        send_goal_future = self.movegroup_client.send_goal_async(goal)
 
         old_settings = self.enable_keyboard_hotkeys()
 
         try:
-            if not self.wait_future(
-                send_goal_future,
-                30.0,
-                "wait for MoveGroup goal acceptance",
-                allow_hotkeys=True,
-            ):
-                return False
-
-            goal_handle = send_goal_future.result()
-
-            if goal_handle is None:
-                self.get_logger().error("Goal handle is None")
-                return False
-
-            if not goal_handle.accepted:
-                self.get_logger().error("Goal rejected")
-                return False
-
-            self.get_logger().info("Goal accepted, waiting for execution to finish...")
-
-            result_future = goal_handle.get_result_async()
-
-            if not self.wait_future(
-                result_future,
-                300.0,
-                "wait for MoveGroup execution result",
-                allow_hotkeys=True,
-            ):
-                return False
-
-            result = result_future.result()
-
-            if result is not None and result.status == GoalStatus.STATUS_SUCCEEDED:
-                self.get_logger().info(f"{pose_name} executed successfully")
-                return True
-
-            status = None if result is None else result.status
-            self.get_logger().error(f"Pose execution failed with status: {status}")
-            return False
-
+            return self.motion.execute_pose(
+                pose_name,
+                pose,
+                wait_fn=lambda future, timeout_s, label: self.utils.wait_future(
+                    future,
+                    timeout_s,
+                    label,
+                    tick_fn=self.process_pending_global_hotkeys,
+                ),
+            )
         finally:
             self.restore_keyboard_hotkeys(old_settings)
 
@@ -747,58 +623,17 @@ Teleop mode:
         self.gripper_busy = False
         self.get_logger().info(f"Gripper {label}: done")
 
-    def record_current_pose(self):
-        now_s = self.now_s()
-        # self.record_debounce_s
-        if (now_s - self.last_record_time_s) < 0.5:
-            self.get_logger().warn("Record ignored: debounce active")
+    def enter_teleop_mode(self):
+        self.get_logger().info("Aligning tool0 to z_ground before teleop...")
+
+        if not self.utils.switch_to_trajectory_mode():
+            self.get_logger().error("Could not switch to trajectory mode for alignment")
             return
 
-        self.last_record_time_s = now_s
+        # if not self.motion.align_tool_to_ground():
+        #     self.get_logger().error("Could not align tool0 to z_ground before teleop")
+        #     return
 
-        try:
-            transform = self.tf_buffer.lookup_transform(
-                self.base_frame,
-                self.tool_frame,
-                rclpy.time.Time(),
-                timeout=rclpy.duration.Duration(seconds=0.2),
-            )
-
-            t = transform.transform.translation
-            q = transform.transform.rotation
-
-            counter = self.get_next_counter()
-
-            row = {
-                "name": f"zone{counter}",
-                "id": str(counter),
-                "x": t.x,
-                "y": t.y,
-                "z": t.z,
-                "qx": q.x,
-                "qy": q.y,
-                "qz": q.z,
-                "qw": q.w,
-            }
-
-            ensure_trailing_newline(self.csv_file)
-
-            with self.csv_file.open("a", newline="") as f:
-                writer = csv.DictWriter(f, fieldnames=CSV_HEADERS)
-                writer.writerow(row)
-
-            self.reload_poses()
-
-            self.get_logger().info(
-                f"Recorded pose {row['name']}: "
-                f"x={t.x:.6f}, y={t.y:.6f}, z={t.z:.6f}, "
-                f"qx={q.x:.6f}, qy={q.y:.6f}, qz={q.z:.6f}, qw={q.w:.6f}"
-            )
-
-        except Exception as exc:
-            self.get_logger().warn(f"TF lookup failed, pose not recorded: {exc}")
-
-    def enter_teleop_mode(self):
         self.get_logger().info("Switching to teleop controller mode...")
 
         if not self.utils.switch_to_teleop_mode():
@@ -839,7 +674,7 @@ Teleop mode:
                         self.capture_dataset_photo()
                     elif key == "p":
                         self.publish_stop()
-                        self.record_current_pose()
+                        self.utils.save_pose_to_csv()
                     elif key == "t":
                         self.publish_stop()
                         self.in_teleop = False
@@ -883,7 +718,7 @@ Teleop mode:
                 continue
 
             if command == "p":
-                self.record_current_pose()
+                self.utils.save_pose_to_csv()
                 continue
 
             if command == "v":

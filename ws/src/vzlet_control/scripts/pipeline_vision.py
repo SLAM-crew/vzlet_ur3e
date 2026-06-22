@@ -213,7 +213,7 @@ class VisionProcessor:
             return None
 
     def _get_next_bgr_frame(self, last_seq: int, timeout_s: float):
-        start_s = self.node.now_s()
+        start_s = self.utils.now_s()
 
         while rclpy.ok():
             rclpy.spin_once(self.node, timeout_sec=0.05)
@@ -225,7 +225,7 @@ class VisionProcessor:
                     self.latest_image_header,
                 )
 
-            if (self.node.now_s() - start_s) > timeout_s:
+            if (self.utils.now_s() - start_s) > timeout_s:
                 return None, last_seq, None
 
         return None, last_seq, None
@@ -505,6 +505,14 @@ class VisionProcessor:
 
             if candidates is None:
                 return None, None
+            
+
+            if not candidates:
+                self.node.get_logger().error(
+                    f"Vote failed because no '{target_class_name}' class was detected. "
+                    f"{target_class_name} storage is empty."
+                )
+                return None, None
 
             tool_projection = self.project_tool0_to_image()
 
@@ -535,13 +543,6 @@ class VisionProcessor:
                 f"candidates={len(candidates)}, "
                 f"detections={[(round(c['center_u'], 1), round(c['center_v'], 1), round(c['conf'], 3)) for c in candidates]}"
             )
-
-            if not candidates:
-                self.node.get_logger().error(
-                    f"YOLO vote failed: no '{target_class_name}' candidates in frame "
-                    f"{frame_number}/{vote_frames}"
-                )
-                return None, None
 
             if vote_index == 0:
                 candidate_votes.append(candidates)
@@ -588,6 +589,13 @@ class VisionProcessor:
         for candidate in candidates:
             candidate["selected"] = False
 
+        if not candidates:
+            self.node.get_logger().error(
+                f"Vote failed because no '{target_class_name}' class was detected. "
+                f"{target_class_name} storage is empty."
+            )
+            return None, None
+        
         selected_candidate = self._select_nearest_to_tool(
             candidates,
             tool_projection,

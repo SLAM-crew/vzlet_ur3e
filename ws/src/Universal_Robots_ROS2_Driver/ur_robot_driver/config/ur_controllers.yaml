@@ -48,8 +48,11 @@ controller_manager:
     tool_contact_controller:
       type: ur_controllers/ToolContactController
 
-    gripper_controller:
-      type: parallel_gripper_action_controller/GripperActionController
+    # gripper_controller:
+    #   type: parallel_gripper_action_controller/GripperActionController
+
+    gpio_controller:
+      type: gpio_controllers/GpioCommandController
 
     # The way this is currently implemented upstream doesn't really work for us. When using
     # position control, the robot will have a tracking error. However, limits will be enforced
@@ -213,6 +216,21 @@ tool_contact_controller:
   ros__parameters:
     tf_prefix: "$(var tf_prefix)"
 
-gripper_controller:
+# gripper_controller:
+#   ros__parameters:
+#     joint: joint_finger_left
+
+gpio_controller:
   ros__parameters:
-    joint: joint_finger_left
+    gpios:
+      - suction_gripper
+
+    command_interfaces:
+      suction_gripper:
+        - interfaces:
+            - state
+
+    state_interfaces:
+      suction_gripper:
+        - interfaces:
+            - state

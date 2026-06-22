@@ -10,10 +10,10 @@ import matplotlib.pyplot as plt
 # Default global params
 INPUT_CSV = "/home/sonieth2/vzlet_ur3e/ws/zone_poses_floor.csv"
 OUTPUT_CSV = "grid_poses.csv"
-INPUT_POSE_NAME = "zone_sensor"
+INPUT_POSE_NAME = "zone49"
 # "sensor_storage" / "body_storage", example -->  "body_storage_00" / "body_storage_12"
-PREFIX_NAME = "sensor_storage"
-START_WITH_ID = 1
+PREFIX_NAME = "piezo_storage"
+STORAGE_ID = 3
 
 GRID_X = 3
 GRID_Y = 5
@@ -72,7 +72,11 @@ def make_pose_name(ix, iy):
     return f"{ix}{iy}"
 
 
-def create_grid_poses(base_pose, grid_x, grid_y, offset_x, offset_y):
+def make_pose_id(storage_id, ix, iy):
+    return int(f"{storage_id}{ix}{iy}")
+
+
+def create_grid_poses(base_pose, grid_x, grid_y, offset_x, offset_y, storage_id):
     base_x = pose_value(base_pose, "x")
     base_y = pose_value(base_pose, "y")
     base_z = pose_value(base_pose, "z")
@@ -84,12 +88,11 @@ def create_grid_poses(base_pose, grid_x, grid_y, offset_x, offset_y):
 
     rows = []
 
-    pose_id = START_WITH_ID
     for ix in range(grid_x):
         for iy in range(grid_y):
             rows.append({
                 "name": make_pose_name(ix, iy),
-                "id": pose_id,
+                "id": make_pose_id(storage_id, ix, iy),
                 "x": base_x + ix * offset_x,
                 "y": base_y + iy * offset_y,
                 "z": base_z,
@@ -98,7 +101,6 @@ def create_grid_poses(base_pose, grid_x, grid_y, offset_x, offset_y):
                 "qz": qz,
                 "qw": qw,
             })
-            pose_id += 1
 
     return rows
 
@@ -169,7 +171,7 @@ def plot_grid(rows, grid_x, grid_y):
         ax.text(
             row["x"] + label_offset_x,
             row["y"] + label_offset_y,
-            f"[{row['name']}]\n(x:{row['x']:.2f}, y:{row['y']:.2f})",
+            f"[{row['name']}]\nid:{row['id']}\n(x:{row['x']:.2f}, y:{row['y']:.2f})",
             fontsize=8,
             va="bottom",
             ha="left",
@@ -242,6 +244,7 @@ def parse_args():
     parser.add_argument("--input-csv", default=INPUT_CSV)
     parser.add_argument("--output-csv", default=OUTPUT_CSV)
     parser.add_argument("--pose-name", default=INPUT_POSE_NAME)
+    parser.add_argument("--storage-id", type=int, default=STORAGE_ID)
     parser.add_argument("--grid-x", type=int, default=GRID_X)
     parser.add_argument("--grid-y", type=int, default=GRID_Y)
     parser.add_argument("--offset-x", type=float, default=OFFSET_X)
@@ -259,8 +262,8 @@ def main():
     if args.grid_y < 1:
         raise ValueError("--grid-y must be >= 1")
 
-    if START_WITH_ID < 0:
-        raise ValueError("START_WITH_ID must be >= 0")
+    if args.storage_id < 0:
+        raise ValueError("--storage-id must be >= 0")
 
     base_pose = read_pose_by_name(args.input_csv, args.pose_name)
 
@@ -270,11 +273,13 @@ def main():
         grid_y=args.grid_y,
         offset_x=args.offset_x,
         offset_y=args.offset_y,
+        storage_id=args.storage_id,
     )
 
     write_poses(args.output_csv, rows)
 
     print(f"Created {len(rows)} grid poses from '{args.pose_name}'")
+    print(f"Storage ID: {args.storage_id}")
     print(f"Output CSV: {args.output_csv}")
 
     plot_grid(

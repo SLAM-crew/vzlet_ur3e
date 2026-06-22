@@ -25,3 +25,4 @@ __pycache__/
 ws/dataset_output
 ws/models
 ws/vote_detect
+helper/grid_poses.csv

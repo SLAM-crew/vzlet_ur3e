@@ -29,6 +29,11 @@ Third - do `ros2 control switch_controllers --activate scaled_joint_trajectory_c
 TODO: add third to custom launch file
 
 
+ID's system for `zone_poses_floor.csv`
+200 --> `2` id of the storage ; `00` id of the grid cell place
+
+
+
 Send pose command for joints
 ```
 ros2 action send_goal /scaled_joint_trajectory_controller/follow_joint_trajectory \
