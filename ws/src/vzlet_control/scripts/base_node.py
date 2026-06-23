@@ -65,6 +65,7 @@ class BaseRobotNode(Node):
         self.declare_parameter("gripper_body_close_position", 0.010)
         self.declare_parameter("gripper_mid_close_position", 0.011)
         self.declare_parameter("gripper_sensor_close_position", 0.014)
+        self.declare_parameter("gripper_wire_close_position", 0.024)
         self.declare_parameter("gripper_open_position", 0.006)
         self.declare_parameter("gripper_max_effort", 0.0)
 
@@ -74,6 +75,7 @@ class BaseRobotNode(Node):
         self.declare_parameter("z_offset_sensor_place", 0.18)
         self.declare_parameter("z_offset_piezo", 0.1525)
         self.declare_parameter("z_offset_mid", 0.15)
+        self.declare_parameter("z_offset_wire", 0.1476) # 0.1451
 
         # YOLO voting parameters.
         self.declare_parameter("yolo_vote_frames", 2)
@@ -126,6 +128,7 @@ class BaseRobotNode(Node):
         self.gripper_body_close_position = float(self.get_parameter("gripper_body_close_position").value)
         self.gripper_mid_close_position = float(self.get_parameter("gripper_mid_close_position").value)
         self.gripper_sensor_close_position = float(self.get_parameter("gripper_sensor_close_position").value)
+        self.gripper_wire_close_position = float(self.get_parameter("gripper_wire_close_position").value)
         self.gripper_open_position = float(self.get_parameter("gripper_open_position").value)
         self.gripper_max_effort = float(self.get_parameter("gripper_max_effort").value)
 
@@ -134,7 +137,7 @@ class BaseRobotNode(Node):
         self.z_offset_sensor_place = float(self.get_parameter("z_offset_sensor_place").value)
         self.z_offset_piezo = float(self.get_parameter("z_offset_piezo").value)
         self.z_offset_mid = float(self.get_parameter("z_offset_mid").value)
-
+        self.z_offset_wire = float(self.get_parameter("z_offset_wire").value)
         self.yolo_vote_frames = int(self.get_parameter("yolo_vote_frames").value)
         self.yolo_vote_max_center_dist_px = float(self.get_parameter("yolo_vote_max_center_dist_px").value)
         self.yolo_vote_min_conf = float(self.get_parameter("yolo_vote_min_conf").value)

@@ -533,8 +533,10 @@ Teleop mode:
             return self.gripper_mid_close_position
         if self.selected_grasp_object == "body":
             return self.gripper_body_close_position
+        if self.selected_grasp_object == "wire":
+            return self.gripper_wire_close_position
     def toggle_grasp_object(self):
-        grasp_objects = ["body", "sensor", "mid"]
+        grasp_objects = ["body", "sensor", "mid", "wire"]
 
         try:
             current_index = grasp_objects.index(self.selected_grasp_object)

@@ -1,29 +1,29 @@
 #!/usr/bin/env python3
 
-import argparse
 import csv
 from pathlib import Path
-
 import matplotlib.pyplot as plt
 
+# Type of grid: 2d / 1d
+GRID_TYPE = 1
 
-# Default global params
 INPUT_CSV = "/home/sonieth2/vzlet_ur3e/ws/zone_poses_floor.csv"
 OUTPUT_CSV = "grid_poses.csv"
-INPUT_POSE_NAME = "mid_storage_00"
+INPUT_POSE_NAME = "wire_storage_00"
 # "sensor_storage" / "body_storage", example -->  "body_storage_00" / "body_storage_12"
-PREFIX_NAME = "mid_storage"
-STORAGE_ID = 4
+PREFIX_NAME = "wire_storage"
+STORAGE_ID = 5
 
-GRID_X = 3
-GRID_Y = 5
+GRID_X = 10
+GRID_Y = 0
 
 # Offset between neighboring cell centers, in meters.
-
-# new version of mid-cell-storage, wide 
-OFFSET_X = 0.036
-OFFSET_Y = 0.036
-# new version of sensor-cell-storage, wide 
+OFFSET_X = 0.010 
+OFFSET_Y = 0.0      # if in case of 1d --> it wont use this axis
+# mid-cell-storage
+# OFFSET_X = 0.036
+# OFFSET_Y = 0.036
+# new version of sensor-cell-storage
 # OFFSET_X = 0.033
 # OFFSET_Y = 0.033
 # new version of body-cell-storage, wide 
@@ -69,18 +69,27 @@ def pose_value(row, key):
         raise ValueError(f"Invalid numeric value for column '{key}': {row.get(key)}")
 
 
-def make_pose_name(ix, iy):
+def make_pose_name(ix, iy=None, grid_type=GRID_TYPE):
+    if grid_type == 1:
+        if PREFIX_NAME:
+            return f"{PREFIX_NAME}_{ix:02d}"
+
+        return f"{ix:02d}"
+
     if PREFIX_NAME:
         return f"{PREFIX_NAME}_{ix}{iy}"
 
     return f"{ix}{iy}"
 
 
-def make_pose_id(storage_id, ix, iy):
+def make_pose_id(storage_id, ix, iy=None, grid_type=GRID_TYPE):
+    if grid_type == 1:
+        return int(f"{storage_id}{ix:02d}")
+
     return int(f"{storage_id}{ix}{iy}")
 
 
-def create_grid_poses(base_pose, grid_x, grid_y, offset_x, offset_y, storage_id):
+def create_grid_poses(base_pose, grid_x, grid_y, offset_x, offset_y, storage_id, grid_type):
     base_x = pose_value(base_pose, "x")
     base_y = pose_value(base_pose, "y")
     base_z = pose_value(base_pose, "z")
@@ -92,11 +101,38 @@ def create_grid_poses(base_pose, grid_x, grid_y, offset_x, offset_y, storage_id)
 
     rows = []
 
+    if grid_type == 1:
+        x_is_zero = abs(offset_x) < 1e-12
+        y_is_zero = abs(offset_y) < 1e-12
+
+        if x_is_zero and y_is_zero:
+            raise ValueError("For 1d grid, one offset must be non-zero")
+
+        if not x_is_zero and not y_is_zero:
+            raise ValueError("For 1d grid, one offset must be zero")
+
+        count = grid_y if x_is_zero else grid_x
+
+        for index in range(count):
+            rows.append({
+                "name": make_pose_name(index, grid_type=grid_type),
+                "id": make_pose_id(storage_id, index, grid_type=grid_type),
+                "x": base_x + index * offset_x,
+                "y": base_y + index * offset_y,
+                "z": base_z,
+                "qx": qx,
+                "qy": qy,
+                "qz": qz,
+                "qw": qw,
+            })
+
+        return rows
+
     for ix in range(grid_x):
         for iy in range(grid_y):
             rows.append({
-                "name": make_pose_name(ix, iy),
-                "id": make_pose_id(storage_id, ix, iy),
+                "name": make_pose_name(ix, iy, grid_type),
+                "id": make_pose_id(storage_id, ix, iy, grid_type),
                 "x": base_x + ix * offset_x,
                 "y": base_y + iy * offset_y,
                 "z": base_z,
@@ -124,34 +160,45 @@ def pose_map_from_rows(rows):
         for row in rows
     }
 
-def plot_grid(rows, grid_x, grid_y):
+def plot_grid(rows, grid_x, grid_y, grid_type, offset_x, offset_y):
     poses = pose_map_from_rows(rows)
 
     fig, ax = plt.subplots()
 
-    # Draw horizontal grid edges.
-    for ix in range(grid_x):
-        for iy in range(grid_y - 1):
-            p1 = poses[make_pose_name(ix, iy)]
-            p2 = poses[make_pose_name(ix, iy + 1)]
+    if grid_type == 1:
+        for index in range(len(rows) - 1):
+            p1 = rows[index]
+            p2 = rows[index + 1]
             ax.plot(
                 [p1["x"], p2["x"]],
                 [p1["y"], p2["y"]],
                 color="black",
                 linewidth=1.0,
             )
+    else:
+        # Draw horizontal grid edges.
+        for ix in range(grid_x):
+            for iy in range(grid_y - 1):
+                p1 = poses[make_pose_name(ix, iy, grid_type)]
+                p2 = poses[make_pose_name(ix, iy + 1, grid_type)]
+                ax.plot(
+                    [p1["x"], p2["x"]],
+                    [p1["y"], p2["y"]],
+                    color="black",
+                    linewidth=1.0,
+                )
 
-    # Draw vertical grid edges.
-    for ix in range(grid_x - 1):
-        for iy in range(grid_y):
-            p1 = poses[make_pose_name(ix, iy)]
-            p2 = poses[make_pose_name(ix + 1, iy)]
-            ax.plot(
-                [p1["x"], p2["x"]],
-                [p1["y"], p2["y"]],
-                color="black",
-                linewidth=1.0,
-            )
+        # Draw vertical grid edges.
+        for ix in range(grid_x - 1):
+            for iy in range(grid_y):
+                p1 = poses[make_pose_name(ix, iy, grid_type)]
+                p2 = poses[make_pose_name(ix + 1, iy, grid_type)]
+                ax.plot(
+                    [p1["x"], p2["x"]],
+                    [p1["y"], p2["y"]],
+                    color="black",
+                    linewidth=1.0,
+                )
 
     # Draw vertices.
     xs = [row["x"] for row in rows]
@@ -164,8 +211,8 @@ def plot_grid(rows, grid_x, grid_y):
     min_y = min(ys)
     max_y = max(ys)
 
-    grid_width = max(max_x - min_x, abs(OFFSET_X), 0.05)
-    grid_height = max(max_y - min_y, abs(OFFSET_Y), 0.05)
+    grid_width = max(max_x - min_x, abs(offset_x), 0.05)
+    grid_height = max(max_y - min_y, abs(offset_y), 0.05)
 
     label_offset_x = grid_width * 0.015
     label_offset_y = grid_height * 0.015
@@ -185,8 +232,11 @@ def plot_grid(rows, grid_x, grid_y):
     axis_len = max(grid_width, grid_height) * 0.35
 
     # Shift axes away from the first grid vertex so they do not overlap the grid.
-    axis_origin_x = min_x - abs(OFFSET_X) * 0.75
-    axis_origin_y = min_y - abs(OFFSET_Y) * 0.75
+    axis_origin_x = min_x - max(abs(offset_x), grid_width * 0.20) * 0.75
+    axis_origin_y = min_y - max(abs(offset_y), grid_height * 0.20) * 0.75
+
+    axis_x_end = axis_origin_x + axis_len
+    axis_y_end = axis_origin_y + axis_len
 
     ax.arrow(
         axis_origin_x,
@@ -212,7 +262,7 @@ def plot_grid(rows, grid_x, grid_y):
     )
 
     ax.text(
-        axis_origin_x + axis_len,
+        axis_x_end,
         axis_origin_y,
         " X",
         color="red",
@@ -220,17 +270,22 @@ def plot_grid(rows, grid_x, grid_y):
     )
     ax.text(
         axis_origin_x,
-        axis_origin_y + axis_len,
+        axis_y_end,
         " Y",
         color="green",
         ha="center",
     )
 
-    pad_x = max(abs(OFFSET_X), grid_width * 0.20)
-    pad_y = max(abs(OFFSET_Y), grid_height * 0.20)
+    pad_x = max(abs(offset_x), grid_width * 0.20, axis_len * 0.35)
+    pad_y = max(abs(offset_y), grid_height * 0.20, axis_len * 0.35)
 
-    ax.set_xlim(axis_origin_x - pad_x, max_x + pad_x)
-    ax.set_ylim(axis_origin_y - pad_y, max_y + pad_y)
+    plot_min_x = min(min_x, axis_origin_x)
+    plot_max_x = max(max_x, axis_x_end)
+    plot_min_y = min(min_y, axis_origin_y)
+    plot_max_y = max(max_y, axis_y_end)
+
+    ax.set_xlim(plot_min_x - pad_x, plot_max_x + pad_x)
+    ax.set_ylim(plot_min_y - pad_y, plot_max_y + pad_y)
 
     ax.set_title("Generated EEF Pose Grid")
     ax.set_xlabel("X [m]")
@@ -240,56 +295,35 @@ def plot_grid(rows, grid_x, grid_y):
 
     plt.show()
 
-def parse_args():
-    parser = argparse.ArgumentParser(
-        description="Create an X*Y EEF pose grid from a single input pose."
-    )
-
-    parser.add_argument("--input-csv", default=INPUT_CSV)
-    parser.add_argument("--output-csv", default=OUTPUT_CSV)
-    parser.add_argument("--pose-name", default=INPUT_POSE_NAME)
-    parser.add_argument("--storage-id", type=int, default=STORAGE_ID)
-    parser.add_argument("--grid-x", type=int, default=GRID_X)
-    parser.add_argument("--grid-y", type=int, default=GRID_Y)
-    parser.add_argument("--offset-x", type=float, default=OFFSET_X)
-    parser.add_argument("--offset-y", type=float, default=OFFSET_Y)
-
-    return parser.parse_args()
-
-
 def main():
-    args = parse_args()
+    if GRID_TYPE not in (1, 2):
+        raise ValueError("GRID_TYPE must be 1 or 2")
 
-    if args.grid_x < 1:
-        raise ValueError("--grid-x must be >= 1")
-
-    if args.grid_y < 1:
-        raise ValueError("--grid-y must be >= 1")
-
-    if args.storage_id < 0:
-        raise ValueError("--storage-id must be >= 0")
-
-    base_pose = read_pose_by_name(args.input_csv, args.pose_name)
+    base_pose = read_pose_by_name(INPUT_CSV, INPUT_POSE_NAME)
 
     rows = create_grid_poses(
         base_pose=base_pose,
-        grid_x=args.grid_x,
-        grid_y=args.grid_y,
-        offset_x=args.offset_x,
-        offset_y=args.offset_y,
-        storage_id=args.storage_id,
+        grid_x=GRID_X,
+        grid_y=GRID_Y,
+        offset_x=OFFSET_X,
+        offset_y=OFFSET_Y,
+        storage_id=STORAGE_ID,
+        grid_type=GRID_TYPE,
     )
 
-    write_poses(args.output_csv, rows)
+    write_poses(OUTPUT_CSV, rows)
 
-    print(f"Created {len(rows)} grid poses from '{args.pose_name}'")
-    print(f"Storage ID: {args.storage_id}")
-    print(f"Output CSV: {args.output_csv}")
+    print(f"Created {len(rows)} grid poses from '{INPUT_POSE_NAME}'")
+    print(f"Storage ID: {STORAGE_ID}")
+    print(f"Output CSV: {OUTPUT_CSV}")
 
     plot_grid(
         rows=rows,
-        grid_x=args.grid_x,
-        grid_y=args.grid_y,
+        grid_x=GRID_X,
+        grid_y=GRID_Y,
+        grid_type=GRID_TYPE,
+        offset_x=OFFSET_X,
+        offset_y=OFFSET_Y,
     )
 
 
