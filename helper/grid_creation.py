@@ -10,18 +10,22 @@ import matplotlib.pyplot as plt
 # Default global params
 INPUT_CSV = "/home/sonieth2/vzlet_ur3e/ws/zone_poses_floor.csv"
 OUTPUT_CSV = "grid_poses.csv"
-INPUT_POSE_NAME = "zone49"
+INPUT_POSE_NAME = "mid_storage_00"
 # "sensor_storage" / "body_storage", example -->  "body_storage_00" / "body_storage_12"
-PREFIX_NAME = "piezo_storage"
-STORAGE_ID = 3
+PREFIX_NAME = "mid_storage"
+STORAGE_ID = 4
 
 GRID_X = 3
 GRID_Y = 5
 
 # Offset between neighboring cell centers, in meters.
+
+# new version of mid-cell-storage, wide 
+OFFSET_X = 0.036
+OFFSET_Y = 0.036
 # new version of sensor-cell-storage, wide 
-OFFSET_X = 0.033
-OFFSET_Y = 0.033
+# OFFSET_X = 0.033
+# OFFSET_Y = 0.033
 # new version of body-cell-storage, wide 
 # OFFSET_X = 0.042
 # OFFSET_Y = 0.042

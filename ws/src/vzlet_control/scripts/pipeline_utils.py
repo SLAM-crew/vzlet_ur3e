@@ -193,9 +193,6 @@ class PipelineUtils:
         )
         return None
     
-    def now_s(self):
-        return self.node.get_clock().now().nanoseconds * 1e-9
-    
     def _log(self, log_level: str, message: str):
         logger = self.node.get_logger()
 

@@ -22,7 +22,7 @@
     image_topic: /camera/camera/color/image_raw
 
 
-pick_pipe:
+main_pipe:
   ros__parameters:
     zone_pose_csv: /home/sonieth2/vzlet_ur3e/ws/zone_poses_floor.csv
 

@@ -43,3 +43,9 @@ ros2 control load_controller joint_trajectory_controller
 ros2 control set_controller_state joint_trajectory_controller inactive
 ros2 control set_controller_state joint_trajectory_controller active
 ```
+
+```bash
+ros2 control load_controller gripper_controller
+ros2 control set_controller_state gripper_controller inactive
+ros2 control set_controller_state gripper_controller active
+```

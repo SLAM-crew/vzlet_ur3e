@@ -213,7 +213,7 @@ class VisionProcessor:
             return None
 
     def _get_next_bgr_frame(self, last_seq: int, timeout_s: float):
-        start_s = self.node.utils.now_s()
+        start_s = self.node.now_s()
 
         while rclpy.ok():
             rclpy.spin_once(self.node, timeout_sec=0.05)
@@ -225,7 +225,7 @@ class VisionProcessor:
                     self.latest_image_header,
                 )
 
-            if (self.node.utils.now_s() - start_s) > timeout_s:
+            if (self.node.now_s() - start_s) > timeout_s:
                 return None, last_seq, None
 
         return None, last_seq, None
@@ -238,38 +238,42 @@ class VisionProcessor:
     ):
         model = self.get_yolo_model()
         if model is None:
-            return None
+            return None, None
 
         try:
             results = model.predict(source=bgr, verbose=False, conf=0.15)
         except Exception as exc:
             self.node.get_logger().warn(f"YOLO inference failed: {exc}")
-            return None
+            return None, None
 
         if not results:
-            return []
+            return [], []
 
         result = results[0]
         boxes = getattr(result, "boxes", None)
 
         if boxes is None or len(boxes) == 0:
-            return []
+            return [], []
+
+        names = getattr(result, "names", {})
+        all_candidates = []
+
+        for box in boxes:
+            cls_id = self._box_cls_id(box)
+            class_name = str(names.get(cls_id, cls_id))
+            all_candidates.append(self._make_debug_candidate(box, class_name))
 
         target_class_id = self._get_target_class_id(result, target_class_name)
         if target_class_id is None:
-            return None
+            return None, all_candidates
 
-        matched_boxes = self._matched_boxes(boxes, target_class_id)
-
-        candidates = [
-            self._make_debug_candidate(box, target_class_name)
-            for box in matched_boxes
+        target_candidates = [
+            candidate for candidate in all_candidates
+            if self._box_cls_id(candidate["box"]) == target_class_id
+            and candidate["conf"] > min_conf
         ]
 
-        return [
-            candidate for candidate in candidates
-            if candidate["conf"] > min_conf
-        ]
+        return target_candidates, all_candidates
 
     def _match_candidates_to_reference(
         self,
@@ -336,6 +340,7 @@ class VisionProcessor:
         vote_index: int,
         vote_frames: int,
         tool_projection=None,
+        status_message: Optional[str] = None,
     ):
         image = bgr.copy()
 
@@ -431,6 +436,18 @@ class VisionProcessor:
             cv2.LINE_AA,
         )
 
+        if status_message:
+            cv2.putText(
+                image,
+                status_message,
+                (10, 58),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.65,
+                (0, 0, 255),
+                2,
+                cv2.LINE_AA,
+            )
+
         # image = self.draw_known_pose_labels(
         #     image,
         #     pose_names=("04", "24"),
@@ -497,24 +514,47 @@ class VisionProcessor:
                 )
                 return None, None
 
-            candidates = self._detect_yolo_candidates(
+            candidates, debug_candidates = self._detect_yolo_candidates(
                 bgr=bgr,
                 target_class_name=target_class_name,
                 min_conf=min_conf,
             )
 
+            tool_projection = self.project_tool0_to_image()
+
             if candidates is None:
+                debug_image = self._draw_vote_debug_image(
+                    bgr=bgr,
+                    candidates=debug_candidates or [],
+                    target_class_name=target_class_name,
+                    vote_index=frame_number,
+                    vote_frames=vote_frames,
+                    tool_projection=tool_projection,
+                    status_message="YOLO error: target class is not available",
+                )
+                self._save_vote_debug_image(debug_image, run_dir, frame_number)
                 return None, None
-            
 
             if not candidates:
+                detected_classes = sorted(
+                    {candidate.get("class_name", "unknown") for candidate in (debug_candidates or [])}
+                )
                 self.node.get_logger().error(
                     f"Vote failed because no '{target_class_name}' class was detected. "
-                    f"That storage is empty."
+                    f"Detected classes={detected_classes}."
                 )
-                return None, None
 
-            tool_projection = self.project_tool0_to_image()
+                debug_image = self._draw_vote_debug_image(
+                    bgr=bgr,
+                    candidates=debug_candidates or [],
+                    target_class_name=target_class_name,
+                    vote_index=frame_number,
+                    vote_frames=vote_frames,
+                    tool_projection=tool_projection,
+                    status_message=f"NO {target_class_name}; saw {detected_classes}",
+                )
+                self._save_vote_debug_image(debug_image, run_dir, frame_number)
+                return None, None
 
             for candidate in candidates:
                 candidate["selected"] = False
@@ -529,7 +569,7 @@ class VisionProcessor:
 
             debug_image = self._draw_vote_debug_image(
                 bgr=bgr,
-                candidates=candidates,
+                candidates=debug_candidates or candidates,
                 target_class_name=target_class_name,
                 vote_index=frame_number,
                 vote_frames=vote_frames,
@@ -540,8 +580,8 @@ class VisionProcessor:
 
             self.node.get_logger().info(
                 f"YOLO vote frame {frame_number}/{vote_frames}: "
-                f"candidates={len(candidates)}, "
-                f"detections={[(round(c['center_u'], 1), round(c['center_v'], 1), round(c['conf'], 3)) for c in candidates]}"
+                f"target_candidates={len(candidates)}, "
+                f"all_detections={[(c.get('class_name', '?'), round(c['center_u'], 1), round(c['center_v'], 1), round(c['conf'], 3)) for c in (debug_candidates or [])]}"
             )
 
             if vote_index == 0:
@@ -693,6 +733,15 @@ class VisionProcessor:
         return max(candidates, key=lambda item: item["conf"])
 
     def _select_nearest_to_tool(self, candidates, tool_projection):
+        if not candidates:
+            return None
+
+        if tool_projection is None:
+            self.node.get_logger().warn(
+                "tool0 projection is unavailable; selecting highest-confidence YOLO candidate"
+            )
+            return self._select_highest_confidence(candidates)
+
         tool0_u, tool0_v, _ = tool_projection
 
         return min(

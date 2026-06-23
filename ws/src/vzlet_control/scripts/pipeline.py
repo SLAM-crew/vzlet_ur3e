@@ -1,7 +1,6 @@
 #!/home/sonieth2/vzlet_ur3e/ur_rtde_scripts/venv/bin/python3
 
 import time
-
 import rclpy
 from geometry_msgs.msg import Pose
 from moveit_msgs.msg import CollisionObject, PlanningScene
@@ -16,7 +15,7 @@ from pipeline_vision import VisionProcessor
 
 class IntegratedPickPipeline(BaseRobotNode):
     def __init__(self):
-        super().__init__("pick_pipe")
+        super().__init__("main_pipe")
 
         self.declare_parameter("add_ground_plane", True)
         self.declare_parameter("ground_plane_z", -0.05)
@@ -32,12 +31,7 @@ class IntegratedPickPipeline(BaseRobotNode):
         self.motion = MotionController(self)
         self.vision = VisionProcessor(self)
 
-        self.image_sub = self.create_subscription(
-            Image,
-            self.image_topic,
-            self.vision.image_callback,
-            10,
-        )
+        self.image_sub = self.create_subscription(Image, self.image_topic, self.vision.image_callback, 10)
 
     def move_to_voted_grid_pose(self, class_type: str) -> bool:
         pose_name = self.vision.select_yolo_grid_pose(
@@ -54,9 +48,9 @@ class IntegratedPickPipeline(BaseRobotNode):
         self.movegroup_client.wait_for_server()
         self.get_logger().info("MoveGroup connected")
 
-        # self.get_logger().info("Waiting for gripper action server...")
-        # self.gripper_client.wait_for_server()
-        # self.get_logger().info("Gripper connected")
+        self.get_logger().info("Waiting for gripper action server...")
+        self.gripper_client.wait_for_server()
+        self.get_logger().info("Gripper connected")
 
         if self.add_ground_plane:
             self.publish_ground_plane()
@@ -79,11 +73,14 @@ class IntegratedPickPipeline(BaseRobotNode):
             # ("grasp-pick: body", lambda: self.motion.execute_grasp_sequence("ACTION_PICK", "body")),
             # ("body cell zone", lambda: self.motion.move_to_zone("BODY_CELL_ZONE")),
             # ("grasp-place: body", lambda: self.motion.execute_grasp_sequence("ACTION_PLACE", "body")),
-            ("sensor pick zone", lambda: self.motion.move_to_zone("SENSOR_PICK_ZONE", constraint="z_ground")),
-            ("voted grid pose: piezo", lambda: self.move_to_voted_grid_pose("piezo")),
-            ("grasp-pick: piezo", lambda: self.motion.execute_pneumatic_grasp_sequence("ACTION_PICK")),
-            ("grasp-place: piezo", lambda: self.motion.execute_pneumatic_grasp_sequence("ACTION_PLACE")),
-
+            # ("sensor pick zone", lambda: self.motion.move_to_zone("SENSOR_PICK_ZONE", constraint="z_ground")),
+            # ("voted grid pose: piezo", lambda: self.move_to_voted_grid_pose("piezo")),
+            # ("grasp-pick: piezo", lambda: self.motion.execute_pneumatic_grasp_sequence("ACTION_PICK")),
+            # ("grasp-place: piezo", lambda: self.motion.execute_pneumatic_grasp_sequence("ACTION_PLACE")),
+            ("mid pick zone", lambda: self.motion.move_to_zone("MID_PICK_ZONE", constraint="z_ground")),
+            ("voted grid pose: mid", lambda: self.move_to_voted_grid_pose("mid")),
+            ("grasp-pick: mid", lambda: self.motion.execute_grasp_sequence("ACTION_PICK", "mid")),
+            ("grasp-place: mid", lambda: self.motion.execute_grasp_sequence("ACTION_PLACE", "mid")),
             # ("tool alignment", lambda: self.motion.align_tool_to_ground()),
             # ("voted grid pose: sensor", lambda: self.move_to_voted_grid_pose("sensor")),
             # ("grasp-pick: sensor", lambda: self.motion.execute_grasp_sequence("ACTION_PICK", "sensor")),
@@ -92,19 +89,19 @@ class IntegratedPickPipeline(BaseRobotNode):
         ]
 
         for name, fn in stages:
-            self.get_logger().info(f"=== Starting stage: {name} ===")
+            self.get_logger().info(f"🚀  Starting stage: {name} ")
             ok = fn()
 
             if not ok:
-                self.get_logger().error(f"Stage failed: {name}")
+                self.get_logger().error(f"❌ Stage failed: {name}")
                 return False
 
-            self.get_logger().info(f"=== Finished stage: {name} ===")
+            self.get_logger().info(f"✅  Finished stage: {name} ")
             time.sleep(0.5)
 
-        self.get_logger().info("Pipeline complete")
+        self.get_logger().info("🎉 Pipeline complete")
         return True
-
+    
     def publish_ground_plane(self):
         scene = PlanningScene()
         scene.is_diff = True
@@ -131,11 +128,9 @@ class IntegratedPickPipeline(BaseRobotNode):
         self.get_logger().info("Ground plane added")
         time.sleep(1.0)
 
-
 def main():
     rclpy.init()
     node = IntegratedPickPipeline()
-
     try:
         success = node.run_pipeline()
         return 0 if success else 1
@@ -145,7 +140,6 @@ def main():
     finally:
         node.destroy_node()
         rclpy.shutdown()
-
 
 if __name__ == "__main__":
     raise SystemExit(main())

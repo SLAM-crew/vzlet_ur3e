@@ -27,7 +27,7 @@ ur_manipulator:
   planner_configs:
     - RRTConnect
 
-# gripper_group:
-#   planner_configs:
-#       - RRTConnect
+gripper_group:
+  planner_configs:
+      - RRTConnect
 

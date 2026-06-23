@@ -83,7 +83,7 @@ joint_limits:
     min_position: -6.33555
     max_position: 6.33555
 
-  # joint_finger_left:
-  #   has_acceleration_limits: true
-  #   max_acceleration: 1.0
+  joint_finger_left:
+    has_acceleration_limits: true
+    max_acceleration: 1.0
   

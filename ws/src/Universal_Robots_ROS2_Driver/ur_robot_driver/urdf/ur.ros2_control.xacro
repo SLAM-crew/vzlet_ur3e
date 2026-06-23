@@ -332,7 +332,7 @@
       </gpio>
     </ros2_control>
 
-    <!-- <ros2_control name="ParallelGripperControl" type="system">
+    <ros2_control name="ParallelGripperControl" type="system">
       <hardware>
         <plugin>feetech_ros2_driver/FeetechHardwareInterface</plugin>
         <param name="usb_port">/dev/ttyACM0</param>
@@ -346,9 +346,9 @@
         <state_interface name="position"/>
         <state_interface name="velocity"/>
       </joint>
-    </ros2_control> -->
+    </ros2_control>
 
-    <ros2_control name="SuctionGripperSystem" type="system">
+    <!-- <ros2_control name="SuctionGripperSystem" type="system">
       <hardware>
         <plugin>suction_gripper_hardware/SuctionGripperSystem</plugin>
         <param name="device">/dev/ttyUSB0</param>
@@ -361,6 +361,6 @@
           <param name="initial_value">0.0</param>
         </state_interface>
       </gpio>
-    </ros2_control>
+    </ros2_control> -->
   </xacro:macro>
 </robot>

@@ -47,8 +47,10 @@ class BaseRobotNode(Node):
         self.declare_parameter("acceleration_scaling", 0.1)
         self.declare_parameter("ompl_velocity_scaling", 0.5)
         self.declare_parameter("ompl_acceleration_scaling", 0.1)
-        self.declare_parameter("pilz_velocity_scaling", 0.6)
-        self.declare_parameter("pilz_acceleration_scaling", 0.15)
+        # self.declare_parameter("pilz_velocity_scaling", 0.6)
+        # self.declare_parameter("pilz_acceleration_scaling", 0.15)
+        self.declare_parameter("pilz_velocity_scaling", 0.3)
+        self.declare_parameter("pilz_acceleration_scaling", 0.05)
 
         # Controllers // TODO:refactor
         self.declare_parameter("controller_switch_service", "/controller_manager/switch_controller")
@@ -60,8 +62,9 @@ class BaseRobotNode(Node):
 
         # Gripper
         self.declare_parameter("gripper_action", "/gripper_controller/gripper_cmd")
-        self.declare_parameter("gripper_body_close_position", 0.011)
-        self.declare_parameter("gripper_sensor_close_position", 0.016)
+        self.declare_parameter("gripper_body_close_position", 0.010)
+        self.declare_parameter("gripper_mid_close_position", 0.011)
+        self.declare_parameter("gripper_sensor_close_position", 0.014)
         self.declare_parameter("gripper_open_position", 0.006)
         self.declare_parameter("gripper_max_effort", 0.0)
 
@@ -70,6 +73,7 @@ class BaseRobotNode(Node):
         self.declare_parameter("z_offset_sensor_pick", 0.15)
         self.declare_parameter("z_offset_sensor_place", 0.18)
         self.declare_parameter("z_offset_piezo", 0.1525)
+        self.declare_parameter("z_offset_mid", 0.15)
 
         # YOLO voting parameters.
         self.declare_parameter("yolo_vote_frames", 2)
@@ -83,7 +87,7 @@ class BaseRobotNode(Node):
         self.declare_parameter("fy", 600.606750)
         self.declare_parameter("cx", 304.549032)
         self.declare_parameter("cy", 269.791445)
-        self.declare_parameter("yolo_model_path", "/home/sonieth2/vzlet_ur3e/ws/models/vzlet_ver8.pt")
+        self.declare_parameter("yolo_model_path", "/home/sonieth2/vzlet_ur3e/ws/models/vzlet_ver9.pt")
 
     def _extract_robot_parameters(self):
         self.base_frame = str(self.get_parameter("base_frame").value)
@@ -120,6 +124,7 @@ class BaseRobotNode(Node):
 
         self.gripper_action = str(self.get_parameter("gripper_action").value)
         self.gripper_body_close_position = float(self.get_parameter("gripper_body_close_position").value)
+        self.gripper_mid_close_position = float(self.get_parameter("gripper_mid_close_position").value)
         self.gripper_sensor_close_position = float(self.get_parameter("gripper_sensor_close_position").value)
         self.gripper_open_position = float(self.get_parameter("gripper_open_position").value)
         self.gripper_max_effort = float(self.get_parameter("gripper_max_effort").value)
@@ -128,6 +133,7 @@ class BaseRobotNode(Node):
         self.z_offset_sensor_pick = float(self.get_parameter("z_offset_sensor_pick").value)
         self.z_offset_sensor_place = float(self.get_parameter("z_offset_sensor_place").value)
         self.z_offset_piezo = float(self.get_parameter("z_offset_piezo").value)
+        self.z_offset_mid = float(self.get_parameter("z_offset_mid").value)
 
         self.yolo_vote_frames = int(self.get_parameter("yolo_vote_frames").value)
         self.yolo_vote_max_center_dist_px = float(self.get_parameter("yolo_vote_max_center_dist_px").value)
@@ -145,21 +151,13 @@ class BaseRobotNode(Node):
         self.scene_pub = self.create_publisher(PlanningScene, "/planning_scene", 10)
 
         self.bridge = CvBridge()
-
+    
         self.tf_buffer = Buffer(cache_time=Duration(seconds=5.0))
         self.tf_listener = TransformListener(self.tf_buffer, self)
 
-        self.movegroup_client = ActionClient(
-            self,
-            MoveGroup,
-            self.move_action,
-        )
-    
-        self.gripper_client = ActionClient(
-            self,
-            ParallelGripperCommand,
-            self.gripper_action,
-        )
+        self.movegroup_client = ActionClient(self, MoveGroup, self.move_action)
+
+        self.gripper_client = ActionClient(self, ParallelGripperCommand, self.gripper_action)
 
     def now_s(self) -> float:
         return self.get_clock().now().nanoseconds * 1e-9

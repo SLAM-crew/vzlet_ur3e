@@ -45,10 +45,10 @@ class MotionController:
         base_frame = self.node.get_parameter("base_frame").value
         tool_frame = self.node.get_parameter("tool_frame").value
 
-        start_s = self.node.utils.now_s()
+        start_s = self.node.now_s()
         last_error = None
 
-        while rclpy.ok() and (self.node.utils.now_s() - start_s) < timeout_s:
+        while rclpy.ok() and (self.node.now_s() - start_s) < timeout_s:
             try:
                 tf_base_tool = self.node.tf_buffer.lookup_transform(
                     base_frame,
@@ -239,10 +239,9 @@ class MotionController:
     def command_gripper(self, position: float, class_type: str, label: Optional[str] = None) -> bool:
         if label is None:
             open_pos = float(self.node.get_parameter("gripper_open_position").value)
-            if class_type == "body":
-                close_pos = float(self.node.get_parameter("gripper_body_close_position").value)
-            if class_type == "sensor":  
-                close_pos = float(self.node.get_parameter("gripper_sensor_close_position").value)
+            if class_type == "body": close_pos = self.node.gripper_body_close_position
+            if class_type == "sensor": close_pos = self.node.gripper_sensor_close_position
+            if class_type == "mid": close_pos = self.node.gripper_mid_close_position
             label = "open" if abs(position - open_pos) < abs(position - close_pos) else "close"
 
         self.node.get_logger().info(f"Gripper {label}: position={position:.4f}")
@@ -318,13 +317,13 @@ class MotionController:
                 "Pneumatic gripper: waiting for /gpio_controller/commands subscriber"
             )
 
-            start_s = self.node.utils.now_s()
+            start_s = self.node.now_s()
             timeout_s = 3.0
 
             while (
                 rclpy.ok()
                 and self.pneumatic_gripper_pub.get_subscription_count() < 1
-                and (self.node.utils.now_s() - start_s) < timeout_s
+                and (self.node.now_s() - start_s) < timeout_s
             ):
                 rclpy.spin_once(self.node, timeout_sec=0.05)
 
@@ -386,32 +385,38 @@ class MotionController:
             return False
 
         if class_type == "body":
-            z_offset = abs(float(self.node.get_parameter("z_offset_body").value))
+            z_offset = self.node.z_offset_body
+        if class_type == "mid":
+            z_offset = self.node.z_offset_mid
         if class_type == "sensor":
             if action == "ACTION_PICK":
-                z_offset = abs(float(self.node.get_parameter("z_offset_sensor_pick").value))
+                z_offset = self.node.z_offset_sensor_pick
             if action == "ACTION_PLACE":
-                z_offset = abs(float(self.node.get_parameter("z_offset_sensor_place").value))
+                z_offset = self.node.z_offset_sensor_place
 
         lowered_pose = copy.deepcopy(start_pose)
         lowered_pose.pose.position.z = z_offset
         if action == "ACTION_PICK":
-            pre_grasp_pos = float(self.node.get_parameter("gripper_open_position").value)
+            pre_grasp_pos = self.node.gripper_open_position
             if class_type == "body":
-                post_grasp_pos = float(self.node.get_parameter("gripper_body_close_position").value)
+                post_grasp_pos = self.node.gripper_body_close_position
             if class_type == "sensor":
-                post_grasp_pos = float(self.node.get_parameter("gripper_sensor_close_position").value)
+                post_grasp_pos = self.node.gripper_sensor_close_position
+            if class_type == "mid":
+                post_grasp_pos = self.node.gripper_mid_close_position
         elif action == "ACTION_PLACE":
-            post_grasp_pos = float(self.node.get_parameter("gripper_open_position").value)
+            post_grasp_pos = self.node.gripper_open_position
             if class_type == "body":
-                pre_grasp_pos = float(self.node.get_parameter("gripper_body_close_position").value)
+                pre_grasp_pos = self.node.gripper_body_close_position
             if class_type == "sensor":
-                pre_grasp_pos = float(self.node.get_parameter("gripper_sensor_close_position").value)
+                pre_grasp_pos = self.node.gripper_sensor_close_position
+            if class_type == "mid":
+                pre_grasp_pos = self.node.gripper_mid_close_position
 
         if action == "ACTION_PICK" and not self.command_gripper(pre_grasp_pos, class_type): return False
-        if not self.execute_move(lowered_pose, f"Move down for {action}"): return False
+        if not self.execute_move(lowered_pose, f"Move down for {action}", pipeline_id=self.node.pilz_pipeline_id, planner_id=self.node.pilz_planner_id): return False
         if not self.command_gripper(post_grasp_pos, class_type): return False
-        if not self.execute_move(start_pose, "Return to upper pose"): return False
+        if not self.execute_move(start_pose, "Return to upper pose", pipeline_id=self.node.pilz_pipeline_id, planner_id=self.node.pilz_planner_id): return False
 
         return True
 
@@ -420,12 +425,8 @@ class MotionController:
         if start_pose is None:
             return False
 
-        pilz_pipeline_id = str(self.node.get_parameter("pilz_pipeline_id").value)
-        pilz_planner_id = str(self.node.get_parameter("pilz_planner_id").value)
-        z_offset = abs(float(self.node.get_parameter("z_offset_piezo").value))
-
         lowered_pose = copy.deepcopy(start_pose)
-        lowered_pose.pose.position.z = z_offset
+        lowered_pose.pose.position.z = self.node.z_offset_piezo
 
         if action == "ACTION_PICK":
             pre_grasp_cmd = "OFF"
@@ -440,13 +441,13 @@ class MotionController:
         if not self.command_pneumatic_gripper(pre_grasp_cmd):
             return False
 
-        if not self.execute_move(lowered_pose, f"Move down for {action}", pipeline_id=pilz_pipeline_id, planner_id=pilz_planner_id):
+        if not self.execute_move(lowered_pose, f"Move down for {action}", pipeline_id=self.node.pilz_pipeline_id, planner_id=self.node.pilz_planner_id):
             return False
 
         if not self.command_pneumatic_gripper(post_grasp_cmd):
             return False
 
-        if not self.execute_move(start_pose, "Return to upper pose", pipeline_id=pilz_pipeline_id, planner_id=pilz_planner_id):
+        if not self.execute_move(start_pose, "Return to upper pose", pipeline_id=self.node.pilz_pipeline_id, planner_id=self.node.pilz_planner_id):
             return False
 
         return True

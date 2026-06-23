@@ -28,7 +28,7 @@ CSV_HEADERS = ["name", "id", "x", "y", "z", "qx", "qy", "qz", "qw"]
 class TrajectoryTeleopCommander(BaseRobotNode):
 
     def __init__(self, csv_file: str):
-        super().__init__("trajectory_teleop_commander")
+        super().__init__("traj_tele")
 
         self.use_background_executor = True
         self.csv_file = Path(csv_file)
@@ -81,13 +81,8 @@ class TrajectoryTeleopCommander(BaseRobotNode):
             self.servo_topic,
             10,
         )
-
-        self.image_sub = self.create_subscription(
-            Image,
-            self.image_topic,
-            self.image_callback,
-            10,
-        )
+        
+        self.image_sub = self.create_subscription(Image, self.image_topic, self.image_callback, 10)
 
         self.publish_timer = self.create_timer(
             1.0 / self.publish_rate,
@@ -534,18 +529,24 @@ Teleop mode:
     def get_selected_gripper_close_position(self):
         if self.selected_grasp_object == "sensor":
             return self.gripper_sensor_close_position
-
-        return self.gripper_body_close_position
-
+        if self.selected_grasp_object == "mid":
+            return self.gripper_mid_close_position
+        if self.selected_grasp_object == "body":
+            return self.gripper_body_close_position
     def toggle_grasp_object(self):
-        self.selected_grasp_object = (
-            "sensor"
-            if self.selected_grasp_object == "body"
-            else "body"
-        )
+        grasp_objects = ["body", "sensor", "mid"]
+
+        try:
+            current_index = grasp_objects.index(self.selected_grasp_object)
+        except ValueError:
+            current_index = 0
+
+        self.selected_grasp_object = grasp_objects[
+            (current_index + 1) % len(grasp_objects)
+        ]
 
         self.get_logger().info(
-            f"Selected grasp object: {self.selected_grasp_object} "
+            f"Selected grasp object: {self.selected_grasp_object}"
         )
 
     def toggle_gripper(self):
