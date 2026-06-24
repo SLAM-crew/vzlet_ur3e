@@ -9,16 +9,16 @@ GRID_TYPE = 1
 
 INPUT_CSV = "/home/sonieth2/vzlet_ur3e/ws/zone_poses_floor.csv"
 OUTPUT_CSV = "grid_poses.csv"
-INPUT_POSE_NAME = "wire_storage_00"
+INPUT_POSE_NAME = "wire5_storage_00"
 # "sensor_storage" / "body_storage", example -->  "body_storage_00" / "body_storage_12"
-PREFIX_NAME = "wire_storage"
+PREFIX_NAME = "wire5_storage"
 STORAGE_ID = 5
 
-GRID_X = 10
+GRID_X = 5
 GRID_Y = 0
 
 # Offset between neighboring cell centers, in meters.
-OFFSET_X = 0.010 
+OFFSET_X = 0.019
 OFFSET_Y = 0.0      # if in case of 1d --> it wont use this axis
 # mid-cell-storage
 # OFFSET_X = 0.036
@@ -150,7 +150,7 @@ def write_poses(csv_path, rows):
 
     with csv_path.open("w", newline="") as f:
         writer = csv.DictWriter(f, fieldnames=CSV_HEADERS)
-        writer.writeheader()
+        # writer.writeheader() # no need of csv headers
         writer.writerows(rows)
 
 

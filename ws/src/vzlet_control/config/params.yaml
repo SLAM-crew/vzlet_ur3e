@@ -37,7 +37,7 @@ main_pipe:
 
     yolo_vote_frames: 2
     yolo_vote_max_center_dist_px: 5.0
-    yolo_vote_min_conf: 0.89
+    min_conf: 0.89
     yolo_vote_frame_timeout_s: 3.0
     yolo_vote_debug_dir: vote_detect
 
@@ -46,7 +46,7 @@ main_pipe:
     cx: 304.549032
     cy: 269.791445
 
-    yolo_model_path: /home/sonieth2/vzlet_ur3e/ws/models/vzlet_ver8.pt
+    model_path: /home/sonieth2/vzlet_ur3e/ws/models/vzlet_ver8.pt
 
     z_offset_body: 0.165
     z_offset_sensor_pick: 0.15

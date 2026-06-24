@@ -36,11 +36,26 @@ class VisionProcessor:
         x1, y1, x2, y2 = self._box_to_xyxy(box)
         w = max(0.0, x2 - x1)
         h = max(0.0, y2 - y1)
+        
         center_u = 0.5 * (x1 + x2)
         center_v = 0.5 * (y1 + y2)
+
         radius_px = 0.5 * max(w, h)
         area = w * h
         return center_u, center_v, radius_px, area
+
+    def _box_grasp_point(self, box, class_name: str):
+        x1, y1, x2, y2 = self._box_to_xyxy(box)
+
+        center_u = 0.5 * (x1 + x2)
+
+        if class_name == "wire5":
+            center_y = 0.5 * (y1 + y2)
+            center_v = 0.5 * (center_y + y2)
+        else:
+            center_v = 0.5 * (y1 + y2)
+
+        return center_u, center_v
 
     def _box_conf(self, box) -> float:
         return float(box.conf.item()) if getattr(box, "conf", None) is not None else 0.0
@@ -49,28 +64,24 @@ class VisionProcessor:
         return int(box.cls.item()) if getattr(box, "cls", None) is not None else -1
     
     def project_tool0_to_image(self) -> Optional[Tuple[float, float, float]]:
-        base_frame = self.node.get_parameter("base_frame").value
-        tool_frame = self.node.get_parameter("tool_frame").value
-        camera_frame = self.node.get_parameter("camera_frame").value
-
         try:
             tf_base_tool = self.node.tf_buffer.lookup_transform(
-                base_frame,
-                tool_frame,
+                self.node.base_frame,
+                self.node.tool_frame,
                 rclpy.time.Time(),
                 timeout=Duration(seconds=0.05),
             )
             point_base = PointStamped()
             point_base.header.stamp = self.node.get_clock().now().to_msg()
-            point_base.header.frame_id = base_frame
+            point_base.header.frame_id = self.node.base_frame
             point_base.point.x = tf_base_tool.transform.translation.x
             point_base.point.y = tf_base_tool.transform.translation.y
             # TODO
             point_base.point.z = 0.01
 
             tf_cam_base = self.node.tf_buffer.lookup_transform(
-                camera_frame,
-                base_frame,
+                self.node.camera_frame,
+                self.node.base_frame,
                 rclpy.time.Time(),
                 timeout=Duration(seconds=0.05),
             )
@@ -83,8 +94,8 @@ class VisionProcessor:
                 self.node.get_logger().warn(f"tool0 projection invalid: z_cam={z:.4f}")
                 return None
 
-            u = self.cam_param("fx") * x / z + self.cam_param("cx")
-            v = self.cam_param("fy") * y / z + self.cam_param("cy")
+            u = self.node.fx * x / z + self.node.cx
+            v = self.node.fy * y / z + self.node.cy
 
             margin_px = 200.0
             if u < -margin_px or u > 640.0 + margin_px or v < -margin_px or v > 480.0 + margin_px:
@@ -147,13 +158,11 @@ class VisionProcessor:
         return best_pose_name
 
     def get_camera_height_depth_estimate(self) -> Optional[float]:
-        base_frame = self.node.get_parameter("base_frame").value
-        camera_frame = self.node.get_parameter("camera_frame").value
 
         try:
             tf_base_cam = self.node.tf_buffer.lookup_transform(
-                base_frame,
-                camera_frame,
+                self.node.base_frame,
+                self.node.camera_frame,
                 rclpy.time.Time(),
             )
 
@@ -165,21 +174,14 @@ class VisionProcessor:
             return None
 
     def pixel_to_base_parallel_camera(self, u: float, v: float):
-        base_frame = self.node.get_parameter("base_frame").value
-        camera_frame = self.node.get_parameter("camera_frame").value
-
-        fx = self.cam_param("fx")
-        fy = self.cam_param("fy")
-        cx = self.cam_param("cx")
-        cy = self.cam_param("cy")
 
         depth_m = self.get_camera_height_depth_estimate()
 
         self.node.get_logger().info(
             f"YOLO pixel-to-base input: "
             f"u={u:.1f}, v={v:.1f}, "
-            f"fx={fx:.1f}, fy={fy:.1f}, "
-            f"cx={cx:.1f}, cy={cy:.1f}, "
+            f"fx={self.node.fx:.1f}, fy={self.node.fy:.1f}, "
+            f"cx={self.node.cx:.1f}, cy={self.node.cy:.1f}, "
             f"depth_m={depth_m:.4f}"
         )
 
@@ -189,19 +191,19 @@ class VisionProcessor:
 
         try:
             target_cam = PointStamped()
-            target_cam.header.frame_id = camera_frame
+            target_cam.header.frame_id = self.node.camera_frame
             target_cam.header.stamp = self.node.get_clock().now().to_msg()
 
-            target_cam.point.x = (u - cx) * depth_m / fx
-            target_cam.point.y = (v - cy) * depth_m / fy
+            target_cam.point.x = (u - self.node.cx) * depth_m / self.node.fx
+            target_cam.point.y = (v - self.node.cy) * depth_m / self.node.fy
             target_cam.point.z = depth_m
 
             tf_base_cam = self.node.tf_buffer.lookup_transform(
-                base_frame,
-                camera_frame,
+                self.node.base_frame,
+                self.node.camera_frame,
                 rclpy.time.Time(),
             )
-            self.node.get_logger().info(f"target_cam: {target_cam}")
+            # self.node.get_logger().info(f"target_cam: {target_cam}")
             target_base = do_transform_point(target_cam, tf_base_cam)
 
             return target_base
@@ -241,7 +243,7 @@ class VisionProcessor:
             return None, None
 
         try:
-            results = model.predict(source=bgr, verbose=False, conf=0.15)
+            results = model.predict(source=bgr, verbose=False, conf= (min_conf - 0.01) )
         except Exception as exc:
             self.node.get_logger().warn(f"YOLO inference failed: {exc}")
             return None, None
@@ -456,7 +458,7 @@ class VisionProcessor:
         return image
 
     def _create_vote_debug_run_dir(self):
-        root_dir = Path(str(self.node.get_parameter("yolo_vote_debug_dir").value))
+        root_dir = Path(self.node.yolo_vote_debug_dir)
         timestamp = datetime.now().strftime("%y%m%d_%H%M%S")
         run_dir = root_dir / timestamp
         run_dir.mkdir(parents=True, exist_ok=True)
@@ -476,13 +478,9 @@ class VisionProcessor:
         self,
         target_class_name: str,
         ):
-        vote_frames = int(self.node.get_parameter("yolo_vote_frames").value)
+        vote_frames = self.node.yolo_vote_frames
         max_center_dist_px = float(
-            self.node.get_parameter("yolo_vote_max_center_dist_px").value
-        )
-        min_conf = float(self.node.get_parameter("yolo_vote_min_conf").value)
-        frame_timeout_s = float(
-            self.node.get_parameter("yolo_vote_frame_timeout_s").value
+            self.node.yolo_vote_max_center_dist_px
         )
 
         if vote_frames < 1:
@@ -491,10 +489,12 @@ class VisionProcessor:
         candidate_votes = []
         last_seq = self.latest_image_seq
         run_dir = self._create_vote_debug_run_dir()
+        first_error = None
+        tool_projection = None
 
         self.node.get_logger().info(
             f"Starting YOLO vote: target_class={target_class_name}, "
-            f"frames={vote_frames}, min_conf={min_conf:.2f}, "
+            f"frames={vote_frames}, min_conf={self.node.min_conf:.2f}, "
             f"max_center_dist_px={max_center_dist_px:.1f}, "
             f"debug_dir={run_dir}"
         )
@@ -504,25 +504,36 @@ class VisionProcessor:
 
             bgr, last_seq, header = self._get_next_bgr_frame(
                 last_seq=last_seq,
-                timeout_s=frame_timeout_s,
+                timeout_s=self.node.yolo_vote_frame_timeout_s,
             )
 
             if bgr is None:
-                self.node.get_logger().error(
+                error_message = (
                     f"YOLO vote failed: timeout waiting for frame "
                     f"{frame_number}/{vote_frames}"
                 )
-                return None, None
+                self.node.get_logger().error(error_message)
+
+                if first_error is None:
+                    first_error = error_message
+
+                continue
 
             candidates, debug_candidates = self._detect_yolo_candidates(
                 bgr=bgr,
                 target_class_name=target_class_name,
-                min_conf=min_conf,
+                min_conf=self.node.min_conf,
             )
 
             tool_projection = self.project_tool0_to_image()
+            status_message = None
 
             if candidates is None:
+                status_message = "YOLO error: target class is not available"
+
+                if first_error is None:
+                    first_error = status_message
+
                 debug_image = self._draw_vote_debug_image(
                     bgr=bgr,
                     candidates=debug_candidates or [],
@@ -530,19 +541,42 @@ class VisionProcessor:
                     vote_index=frame_number,
                     vote_frames=vote_frames,
                     tool_projection=tool_projection,
-                    status_message="YOLO error: target class is not available",
+                    status_message=status_message,
                 )
                 self._save_vote_debug_image(debug_image, run_dir, frame_number)
-                return None, None
+                continue
 
             if not candidates:
-                detected_classes = sorted(
-                    {candidate.get("class_name", "unknown") for candidate in (debug_candidates or [])}
+                all_detections = [
+                    (
+                        c.get("class_name", "?"),
+                        round(c["conf"], 3),
+                        round(c["center_u"], 1),
+                        round(c["center_v"], 1),
+                    )
+                    for c in (debug_candidates or [])
+                ]
+
+                target_detections = [
+                    item for item in all_detections
+                    if item[0] == target_class_name
+                ]
+
+                status_message = (
+                    f"NO {target_class_name} above min_conf={self.node.min_conf:.2f}; "
+                    f"target={target_detections}"
                 )
-                self.node.get_logger().error(
-                    f"Vote failed because no '{target_class_name}' class was detected. "
-                    f"Detected classes={detected_classes}."
+
+                error_message = (
+                    f"Vote frame {frame_number}/{vote_frames}: "
+                    f"no '{target_class_name}' candidate above min_conf={self.node.min_conf:.2f}. "
+                    f"All detections={all_detections}"
                 )
+
+                self.node.get_logger().error(error_message)
+
+                if first_error is None:
+                    first_error = error_message
 
                 debug_image = self._draw_vote_debug_image(
                     bgr=bgr,
@@ -551,10 +585,10 @@ class VisionProcessor:
                     vote_index=frame_number,
                     vote_frames=vote_frames,
                     tool_projection=tool_projection,
-                    status_message=f"NO {target_class_name}; saw {detected_classes}",
+                    status_message=status_message,
                 )
                 self._save_vote_debug_image(debug_image, run_dir, frame_number)
-                return None, None
+                continue
 
             for candidate in candidates:
                 candidate["selected"] = False
@@ -567,6 +601,38 @@ class VisionProcessor:
             if selected_candidate is not None:
                 selected_candidate["selected"] = True
 
+            if not candidate_votes:
+                candidate_votes.append(candidates)
+                status_message = "OK reference frame"
+            else:
+                matched = self._match_candidates_to_reference(
+                    reference_candidates=candidate_votes[0],
+                    current_candidates=candidates,
+                    max_center_dist_px=max_center_dist_px,
+                )
+
+                if matched is None:
+                    status_message = (
+                        f"VOTE MISMATCH: expected={len(candidate_votes[0])}, "
+                        f"got={len(candidates)}"
+                    )
+
+                    error_message = (
+                        f"YOLO vote failed: frame {frame_number}/{vote_frames} does not "
+                        f"match reference frame. Expected count={len(candidate_votes[0])}, "
+                        f"got count={len(candidates)}, max_center_dist_px={max_center_dist_px:.1f}. "
+                        f"reference={[(round(c['center_u'], 1), round(c['center_v'], 1), round(c['conf'], 3)) for c in candidate_votes[0]]}, "
+                        f"current={[(round(c['center_u'], 1), round(c['center_v'], 1), round(c['conf'], 3)) for c in candidates]}"
+                    )
+
+                    self.node.get_logger().error(error_message)
+
+                    if first_error is None:
+                        first_error = error_message
+                else:
+                    candidate_votes.append(matched)
+                    status_message = "OK matched frame"
+
             debug_image = self._draw_vote_debug_image(
                 bgr=bgr,
                 candidates=debug_candidates or candidates,
@@ -574,6 +640,7 @@ class VisionProcessor:
                 vote_index=frame_number,
                 vote_frames=vote_frames,
                 tool_projection=tool_projection,
+                status_message=status_message,
             )
 
             self._save_vote_debug_image(debug_image, run_dir, frame_number)
@@ -584,27 +651,18 @@ class VisionProcessor:
                 f"all_detections={[(c.get('class_name', '?'), round(c['center_u'], 1), round(c['center_v'], 1), round(c['conf'], 3)) for c in (debug_candidates or [])]}"
             )
 
-            if vote_index == 0:
-                candidate_votes.append(candidates)
-                continue
-
-            matched = self._match_candidates_to_reference(
-                reference_candidates=candidate_votes[0],
-                current_candidates=candidates,
-                max_center_dist_px=max_center_dist_px,
+        if first_error is not None:
+            self.node.get_logger().error(
+                f"YOLO vote rejected after saving debug frames to {run_dir}: {first_error}"
             )
+            return None, None
 
-            if matched is None:
-                self.node.get_logger().error(
-                    f"YOLO vote failed: frame {frame_number}/{vote_frames} does not "
-                    f"match reference frame. Expected count={len(candidate_votes[0])}, "
-                    f"got count={len(candidates)}, max_center_dist_px={max_center_dist_px:.1f}. "
-                    f"reference={[(round(c['center_u'], 1), round(c['center_v'], 1), round(c['conf'], 3)) for c in candidate_votes[0]]}, "
-                    f"current={[(round(c['center_u'], 1), round(c['center_v'], 1), round(c['conf'], 3)) for c in candidates]}"
-                )
-                return None, None
-
-            candidate_votes.append(matched)
+        if len(candidate_votes) != vote_frames:
+            self.node.get_logger().error(
+                f"YOLO vote rejected: saved debug frames but accepted "
+                f"{len(candidate_votes)}/{vote_frames} vote frames"
+            )
+            return None, None
 
         averaged_candidates = self._average_candidate_votes(candidate_votes)
 
@@ -714,7 +772,8 @@ class VisionProcessor:
 
     def _make_debug_candidate(self, box, class_name: str):
         conf = self._box_conf(box)
-        center_u, center_v, radius_px, area = self._box_center_radius_area(box)
+        center_u, center_v = self._box_grasp_point(box, class_name)
+        _, _, radius_px, area = self._box_center_radius_area(box)
         x1, y1, x2, y2 = self._box_to_xyxy(box)
 
         return {
@@ -761,41 +820,35 @@ class VisionProcessor:
             self.node.get_logger().error("Ultralytics is not available, cannot use neural circle detection")
             return None
 
-        model_path = Path(str(self.node.get_parameter("yolo_model_path").value))
-        if not model_path.exists():
-            self.node.get_logger().error(f"YOLO model file not found: {model_path}")
+        if not Path(self.node.model_path).exists():
+            self.node.get_logger().error(f"YOLO model file not found: {self.node.model_path}")
             return None
 
         try:
-            self._yolo_model = yolo_class(str(model_path))
-            self.node.get_logger().info(f"Loaded YOLO circle detector from {model_path}")
+            self._yolo_model = yolo_class(str(self.node.model_path))
+            self.node.get_logger().info(f"Loaded YOLO circle detector from {self.node.model_path}")
             return self._yolo_model
         except Exception as exc:
-            self.node.get_logger().error(f"Could not load YOLO model {model_path}: {exc}")
+            self.node.get_logger().error(f"Could not load YOLO model {self.node.model_path}: {exc}")
             return None
-
-    def cam_param(self, name: str) -> float:
-        return float(self.node.get_parameter(name).value)
     
     def base_point_to_pixel_manual(self, x_base: float, y_base: float, z_base: float):
-        base_frame = self.node.get_parameter("base_frame").value
-        camera_frame = self.node.get_parameter("camera_frame").value
 
-        fx = self.cam_param("fx")
-        fy = self.cam_param("fy")
-        cx = self.cam_param("cx")
-        cy = self.cam_param("cy")
+        fx = self.node.fx
+        fy = self.node.fy
+        cx = self.node.cx
+        cy = self.node.cy
 
         point_base = PointStamped()
-        point_base.header.frame_id = base_frame
+        point_base.header.frame_id = self.node.base_frame
         point_base.header.stamp = self.node.get_clock().now().to_msg()
         point_base.point.x = float(x_base)
         point_base.point.y = float(y_base)
         point_base.point.z = float(z_base)
 
         tf_cam_base = self.node.tf_buffer.lookup_transform(
-            camera_frame,
-            base_frame,
+            self.node.camera_frame,
+            self.node.base_frame,
             rclpy.time.Time(),
             timeout=Duration(seconds=0.05),
         )

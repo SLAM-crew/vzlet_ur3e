@@ -238,10 +238,10 @@ class MotionController:
 
     def command_gripper(self, position: float, class_type: str, label: Optional[str] = None) -> bool:
         if label is None:
-            open_pos = float(self.node.get_parameter("gripper_open_position").value)
-            if class_type == "body": close_pos = self.node.gripper_body_close_position
-            if class_type == "sensor": close_pos = self.node.gripper_sensor_close_position
-            if class_type == "mid": close_pos = self.node.gripper_mid_close_position
+            close_pos = self.node.get_gripper_position("CLOSE", class_type)
+            open_pos = self.node.get_gripper_position("OPEN", class_type)
+            if close_pos is None or open_pos is None:
+                return False
             label = "open" if abs(position - open_pos) < abs(position - close_pos) else "close"
 
         self.node.get_logger().info(f"Gripper {label}: position={position:.4f}")
@@ -378,42 +378,36 @@ class MotionController:
         raise ValueError(
             f"unsupported command type {type(command).__name__}; expected 0/1 or ON/OFF"
         )
-
+            
     def execute_grasp_sequence(self, action: str, class_type: str) -> bool:
         start_pose = self.get_current_tool0_pose()
         if start_pose is None:
             return False
 
-        if class_type == "body":
-            z_offset = self.node.z_offset_body
-        if class_type == "mid":
-            z_offset = self.node.z_offset_mid
-        if class_type == "sensor":
-            if action == "ACTION_PICK":
-                z_offset = self.node.z_offset_sensor_pick
-            if action == "ACTION_PLACE":
-                z_offset = self.node.z_offset_sensor_place
+        z_offset = self.node.get_grasp_z_offset(action, class_type)
+        if z_offset is None:
+            return False
+
+        if action == "ACTION_PICK":
+            pre_grasp_pos = self.node.get_gripper_position("OPEN", class_type)
+            post_grasp_pos = self.node.get_gripper_position("CLOSE", class_type)
+        elif action == "ACTION_PLACE":
+            pre_grasp_pos = self.node.get_gripper_position("CLOSE", class_type)
+            post_grasp_pos = self.node.get_gripper_position("OPEN", class_type)
+        else:
+            self.node.get_logger().error(f"Unknown action: {action}")
+            return False
+
+        if pre_grasp_pos is None or post_grasp_pos is None:
+            return False
 
         lowered_pose = copy.deepcopy(start_pose)
         lowered_pose.pose.position.z = z_offset
-        if action == "ACTION_PICK":
-            pre_grasp_pos = self.node.gripper_open_position
-            if class_type == "body":
-                post_grasp_pos = self.node.gripper_body_close_position
-            if class_type == "sensor":
-                post_grasp_pos = self.node.gripper_sensor_close_position
-            if class_type == "mid":
-                post_grasp_pos = self.node.gripper_mid_close_position
-        elif action == "ACTION_PLACE":
-            post_grasp_pos = self.node.gripper_open_position
-            if class_type == "body":
-                pre_grasp_pos = self.node.gripper_body_close_position
-            if class_type == "sensor":
-                pre_grasp_pos = self.node.gripper_sensor_close_position
-            if class_type == "mid":
-                pre_grasp_pos = self.node.gripper_mid_close_position
 
-        if action == "ACTION_PICK" and not self.command_gripper(pre_grasp_pos, class_type): return False
+        if action == "ACTION_PICK":
+            if not self.command_gripper(pre_grasp_pos, class_type):
+                return False
+    
         if not self.execute_move(lowered_pose, f"Move down for {action}", pipeline_id=self.node.pilz_pipeline_id, planner_id=self.node.pilz_planner_id): return False
         if not self.command_gripper(post_grasp_pos, class_type): return False
         if not self.execute_move(start_pose, "Return to upper pose", pipeline_id=self.node.pilz_pipeline_id, planner_id=self.node.pilz_planner_id): return False

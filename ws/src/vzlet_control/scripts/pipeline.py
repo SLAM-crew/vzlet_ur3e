@@ -23,9 +23,7 @@ class IntegratedPickPipeline(BaseRobotNode):
 
         self.add_ground_plane = bool(self.get_parameter("add_ground_plane").value)
         self.ground_plane_z = float(self.get_parameter("ground_plane_z").value)
-        self.ground_plane_thickness = float(
-            self.get_parameter("ground_plane_thickness").value
-        )
+        self.ground_plane_thickness = float(self.get_parameter("ground_plane_thickness").value)
 
         self.utils = PipelineUtils(self)
         self.motion = MotionController(self)
@@ -34,9 +32,7 @@ class IntegratedPickPipeline(BaseRobotNode):
         self.image_sub = self.create_subscription(Image, self.image_topic, self.vision.image_callback, 10)
 
     def move_to_voted_grid_pose(self, class_type: str) -> bool:
-        pose_name = self.vision.select_yolo_grid_pose(
-            target_class_name=class_type,
-        )
+        pose_name = self.vision.select_yolo_grid_pose(target_class_name=class_type)
 
         if pose_name is None:
             return False
@@ -77,10 +73,11 @@ class IntegratedPickPipeline(BaseRobotNode):
             # ("voted grid pose: piezo", lambda: self.move_to_voted_grid_pose("piezo")),
             # ("pick: piezo", lambda: self.motion.execute_pneumatic_grasp_sequence("ACTION_PICK")),
             # ("place: piezo", lambda: self.motion.execute_pneumatic_grasp_sequence("ACTION_PLACE")),
-            ("wire pick zone", lambda: self.motion.move_to_zone("WIRE_PICK_ZONE", constraint="z_ground")),
-            ("voted grid pose: wire", lambda: self.move_to_voted_grid_pose("wire")),
-            ("pick: wire", lambda: self.motion.execute_grasp_sequence("ACTION_PICK", "wire")),
-            ("place: wire", lambda: self.motion.execute_grasp_sequence("ACTION_PLACE", "wire")),
+            ("wire pick zone", lambda: self.motion.move_to_zone("WIRE5_PICK_ZONE", constraint="z_ground")),
+            ("voted grid pose: wire", lambda: self.move_to_voted_grid_pose("wire5")),
+            ("pick: wire", lambda: self.motion.execute_grasp_sequence("ACTION_PICK", "wire5")),
+            ("place: wire", lambda: self.motion.execute_grasp_sequence("ACTION_PLACE", "wire5")),
+            ("wire pick zone", lambda: self.motion.move_to_zone("WIRE5_PICK_ZONE", constraint="z_ground")),
             # ("tool alignment", lambda: self.motion.align_tool_to_ground()),
             # ("voted grid pose: sensor", lambda: self.move_to_voted_grid_pose("sensor")),
             # ("pick: sensor", lambda: self.motion.execute_grasp_sequence("ACTION_PICK", "sensor")),

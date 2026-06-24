@@ -33,12 +33,10 @@ class TrajectoryTeleopCommander(BaseRobotNode):
         self.use_background_executor = True
         self.csv_file = Path(csv_file)
 
-        self.declare_parameter("servo_topic", "/servo_node/delta_twist_cmds")
         self.declare_parameter("linear_speed", 0.4)
         self.declare_parameter("publish_rate", 30.0)
         self.declare_parameter("output_dir", "dataset_output")
 
-        self.servo_topic = str(self.get_parameter("servo_topic").value)
         self.linear_speed = float(self.get_parameter("linear_speed").value)
         self.publish_rate = float(self.get_parameter("publish_rate").value)
         self.output_dir = Path(str(self.get_parameter("output_dir").value))
@@ -78,7 +76,7 @@ class TrajectoryTeleopCommander(BaseRobotNode):
 
         self.servo_pub = self.create_publisher(
             TwistStamped,
-            self.servo_topic,
+            self.node.servo_topic,
             10,
         )
         
@@ -90,7 +88,7 @@ class TrajectoryTeleopCommander(BaseRobotNode):
         )
 
         self.get_logger().info(f"Loaded {len(self.utils.poses)} poses from: {self.csv_file}")
-        self.get_logger().info(f"Servo topic: {self.servo_topic}")
+        self.get_logger().info(f"Servo topic: {self.node.servo_topic}")
         self.get_logger().info(f"Frame ID: {self.base_frame}")
         self.get_logger().info(f"Gripper action: {self.gripper_action}")
         self.get_logger().info(
@@ -411,75 +409,6 @@ Teleop mode:
             )
         print("")
 
-    # def execute_pose(self, pose_name: str, pose: dict) -> bool:
-    #     target_pose = self.utils.pose_to_pose_stamped(pose)
-
-    #     self.get_logger().info(
-    #         f"Executing pose {pose_name}: "
-    #         f"x={pose['x']:.4f}, y={pose['y']:.4f}, z={pose['z']:.4f}, "
-    #         f"qx={pose['qx']:.4f}, qy={pose['qy']:.4f}, "
-    #         f"qz={pose['qz']:.4f}, qw={pose['qw']:.4f}"
-    #     )
-
-    #     self.get_logger().info("Waiting for MoveGroup action server...")
-
-    #     if not self.movegroup_client.wait_for_server(timeout_sec=10.0):
-    #         self.get_logger().error("MoveGroup action server is not available")
-    #         return False
-
-    #     self.get_logger().info("MoveGroup connected")
-    #     self.get_logger().info("During execution: press z to capture one image, p to record pose")
-
-    #     goal = self.create_move_goal(target_pose)
-    #     send_goal_future = self.movegroup_client.send_goal_async(goal)
-
-    #     old_settings = self.enable_keyboard_hotkeys()
-
-    #     try:
-    #         if not self.utils.wait_future(
-    #             send_goal_future,
-    #             30.0,
-    #             "wait for MoveGroup goal acceptance",
-    #             tick_fn=self.process_pending_global_hotkeys,
-    #         ):
-    #             return False
-
-    #         goal_handle = send_goal_future.result()
-
-    #         if goal_handle is None:
-    #             self.get_logger().error("Goal handle is None")
-    #             return False
-
-    #         if not goal_handle.accepted:
-    #             self.get_logger().error("Goal rejected")
-    #             return False
-
-    #         self.get_logger().info("Goal accepted, waiting for execution to finish...")
-
-    #         result_future = goal_handle.get_result_async()
-
-    #         if not self.utils.wait_future(
-    #             result_future,
-    #             300.0,
-    #             "wait for MoveGroup execution result",
-    #             tick_fn=self.process_pending_global_hotkeys,
-    #         ):
-    #             return False
-
-    #         result = result_future.result()
-
-    #         if result is not None and result.status == GoalStatus.STATUS_SUCCEEDED:
-    #             self.get_logger().info(f"{pose_name} executed successfully")
-    #             return True
-
-    #         status = None if result is None else result.status
-    #         self.get_logger().error(f"Pose execution failed with status: {status}")
-    #         return False
-
-    #     finally:
-    #         self.restore_keyboard_hotkeys(old_settings)
-
-
     def execute_pose(self, pose_name: str, pose: dict) -> bool:
         self.get_logger().info(
             "During execution: press z to capture one image, p to record pose"
@@ -525,18 +454,9 @@ Teleop mode:
             self.current_twist.twist.linear.x = x
             self.current_twist.twist.linear.y = y
             self.current_twist.twist.linear.z = z
-
-    def get_selected_gripper_close_position(self):
-        if self.selected_grasp_object == "sensor":
-            return self.gripper_sensor_close_position
-        if self.selected_grasp_object == "mid":
-            return self.gripper_mid_close_position
-        if self.selected_grasp_object == "body":
-            return self.gripper_body_close_position
-        if self.selected_grasp_object == "wire":
-            return self.gripper_wire_close_position
+    
     def toggle_grasp_object(self):
-        grasp_objects = ["body", "sensor", "mid", "wire"]
+        grasp_objects = ["body", "sensor", "mid", "wire5"]
 
         try:
             current_index = grasp_objects.index(self.selected_grasp_object)
@@ -560,13 +480,14 @@ Teleop mode:
             self.get_logger().warn("Gripper action server is not available")
             return
 
-        target_position = (
-            self.gripper_open_position
-            if self.gripper_is_closed
-            else self.get_selected_gripper_close_position()
-        )
-        label = "open" if self.gripper_is_closed else "close"
         selected_grasp_object = self.selected_grasp_object
+        pose_type = "OPEN" if self.gripper_is_closed else "CLOSE"
+        target_position = self.get_gripper_position(pose_type, selected_grasp_object)
+
+        if target_position is None:
+            return
+
+        label = pose_type.lower()
 
         goal = ParallelGripperCommand.Goal()
         goal.command.position = [target_position]
@@ -619,6 +540,7 @@ Teleop mode:
             self.get_logger().error("Could not switch to trajectory mode for alignment")
             return
 
+        # TODO: check again later
         # if not self.motion.align_tool_to_ground():
         #     self.get_logger().error("Could not align tool0 to z_ground before teleop")
         #     return

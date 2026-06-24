@@ -6,7 +6,7 @@ from rclpy.action import ActionClient
 from rclpy.duration import Duration
 from rclpy.node import Node
 from tf2_ros import Buffer, TransformListener
-
+from typing import Optional
 
 class BaseRobotNode(Node):
     def __init__(self, node_name: str):
@@ -61,11 +61,13 @@ class BaseRobotNode(Node):
         self.declare_parameter("servo_command_type", 1)
 
         # Gripper
+        self.declare_parameter("servo_topic", "/servo_node/delta_twist_cmds")
         self.declare_parameter("gripper_action", "/gripper_controller/gripper_cmd")
         self.declare_parameter("gripper_body_close_position", 0.010)
         self.declare_parameter("gripper_mid_close_position", 0.011)
         self.declare_parameter("gripper_sensor_close_position", 0.014)
         self.declare_parameter("gripper_wire_close_position", 0.024)
+        self.declare_parameter("gripper_wire_open_position", 0.018)
         self.declare_parameter("gripper_open_position", 0.006)
         self.declare_parameter("gripper_max_effort", 0.0)
 
@@ -75,12 +77,12 @@ class BaseRobotNode(Node):
         self.declare_parameter("z_offset_sensor_place", 0.18)
         self.declare_parameter("z_offset_piezo", 0.1525)
         self.declare_parameter("z_offset_mid", 0.15)
-        self.declare_parameter("z_offset_wire", 0.1476) # 0.1451
+        self.declare_parameter("z_offset_wire5", 0.1495)
 
         # YOLO voting parameters.
         self.declare_parameter("yolo_vote_frames", 2)
         self.declare_parameter("yolo_vote_max_center_dist_px", 5.0)
-        self.declare_parameter("yolo_vote_min_conf", 0.89)
+        self.declare_parameter("min_conf", 0.70)
         self.declare_parameter("yolo_vote_frame_timeout_s", 3.0)
         self.declare_parameter("yolo_vote_debug_dir", "vote_detect")
 
@@ -89,7 +91,7 @@ class BaseRobotNode(Node):
         self.declare_parameter("fy", 600.606750)
         self.declare_parameter("cx", 304.549032)
         self.declare_parameter("cy", 269.791445)
-        self.declare_parameter("yolo_model_path", "/home/sonieth2/vzlet_ur3e/ws/models/vzlet_ver9.pt")
+        self.declare_parameter("model_path", "/home/sonieth2/vzlet_ur3e/ws/models/vzlet_ver10.pt")
 
     def _extract_robot_parameters(self):
         self.base_frame = str(self.get_parameter("base_frame").value)
@@ -124,11 +126,13 @@ class BaseRobotNode(Node):
         self.servo_command_type_service = str(self.get_parameter("servo_command_type_service").value)
         self.servo_command_type = int(self.get_parameter("servo_command_type").value)
 
+        self.servo_topic = str(self.get_parameter("servo_topic").value)
         self.gripper_action = str(self.get_parameter("gripper_action").value)
         self.gripper_body_close_position = float(self.get_parameter("gripper_body_close_position").value)
         self.gripper_mid_close_position = float(self.get_parameter("gripper_mid_close_position").value)
         self.gripper_sensor_close_position = float(self.get_parameter("gripper_sensor_close_position").value)
         self.gripper_wire_close_position = float(self.get_parameter("gripper_wire_close_position").value)
+        self.gripper_wire_open_position = float(self.get_parameter("gripper_wire_open_position").value)
         self.gripper_open_position = float(self.get_parameter("gripper_open_position").value)
         self.gripper_max_effort = float(self.get_parameter("gripper_max_effort").value)
 
@@ -137,10 +141,10 @@ class BaseRobotNode(Node):
         self.z_offset_sensor_place = float(self.get_parameter("z_offset_sensor_place").value)
         self.z_offset_piezo = float(self.get_parameter("z_offset_piezo").value)
         self.z_offset_mid = float(self.get_parameter("z_offset_mid").value)
-        self.z_offset_wire = float(self.get_parameter("z_offset_wire").value)
+        self.z_offset_wire5 = float(self.get_parameter("z_offset_wire5").value)
         self.yolo_vote_frames = int(self.get_parameter("yolo_vote_frames").value)
         self.yolo_vote_max_center_dist_px = float(self.get_parameter("yolo_vote_max_center_dist_px").value)
-        self.yolo_vote_min_conf = float(self.get_parameter("yolo_vote_min_conf").value)
+        self.min_conf = float(self.get_parameter("min_conf").value)
         self.yolo_vote_frame_timeout_s = float(self.get_parameter("yolo_vote_frame_timeout_s").value)
         self.yolo_vote_debug_dir = str(self.get_parameter("yolo_vote_debug_dir").value)
 
@@ -148,7 +152,7 @@ class BaseRobotNode(Node):
         self.fy = float(self.get_parameter("fy").value)
         self.cx = float(self.get_parameter("cx").value)
         self.cy = float(self.get_parameter("cy").value)
-        self.yolo_model_path = str(self.get_parameter("yolo_model_path").value)
+        self.model_path = str(self.get_parameter("model_path").value)
 
     def _initialize_core_components(self):
         self.scene_pub = self.create_publisher(PlanningScene, "/planning_scene", 10)
@@ -162,5 +166,63 @@ class BaseRobotNode(Node):
 
         self.gripper_client = ActionClient(self, ParallelGripperCommand, self.gripper_action)
 
+    def get_grasp_z_offset(self, action: str, class_type: str) -> Optional[float]:
+        z_offsets = {
+            "body": {
+                "ACTION_PICK": self.z_offset_body,
+                "ACTION_PLACE": self.z_offset_body,
+            },
+            "mid": {
+                "ACTION_PICK": self.z_offset_mid,
+                "ACTION_PLACE": self.z_offset_mid,
+            },
+            "sensor": {
+                "ACTION_PICK": self.z_offset_sensor_pick,
+                "ACTION_PLACE": self.z_offset_sensor_place,
+            },
+            "wire5": {
+                "ACTION_PICK": self.z_offset_wire5,
+                "ACTION_PLACE": self.z_offset_wire5,
+            },
+        }
+
+        try:
+            return z_offsets[class_type][action]
+        except KeyError:
+            self.get_logger().error(
+                f"Unsupported z-offset config: action={action}, class_type={class_type}"
+            )
+            return None
+
+    def get_gripper_position(self, pose_type: str, class_type: str) -> Optional[float]:
+        pose_type = pose_type.strip().upper()
+
+        gripper_positions = {
+            "body": {
+                "OPEN": self.gripper_open_position,
+                "CLOSE": self.gripper_body_close_position,
+            },
+            "mid": {
+                "OPEN": self.gripper_open_position,
+                "CLOSE": self.gripper_mid_close_position,
+            },
+            "sensor": {
+                "OPEN": self.gripper_open_position,
+                "CLOSE": self.gripper_sensor_close_position,
+            },
+            "wire5": {
+                "OPEN": self.gripper_wire_open_position,
+                "CLOSE": self.gripper_wire_close_position,
+            },
+        }
+
+        try:
+            return gripper_positions[class_type][pose_type]
+        except KeyError:
+            self.get_logger().error(
+                f"Unsupported gripper config: pose_type={pose_type}, class_type={class_type}"
+            )
+            return None
+    
     def now_s(self) -> float:
         return self.get_clock().now().nanoseconds * 1e-9
