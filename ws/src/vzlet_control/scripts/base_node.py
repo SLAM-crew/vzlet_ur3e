@@ -37,20 +37,23 @@ class BaseRobotNode(Node):
         self.declare_parameter("planner_id", "RRTConnect")
         self.declare_parameter("pilz_pipeline_id", "pilz_industrial_motion_planner")
         self.declare_parameter("pilz_planner_id", "LIN")
-        self.declare_parameter("planning_attempts", 10)
-        self.declare_parameter("allowed_planning_time", 5.0)
+        self.declare_parameter("planning_attempts", 5)
+        self.declare_parameter("allowed_planning_time", 0.5)
         self.declare_parameter("position_tolerance", 0.001)
         self.declare_parameter("orientation_tolerance", 0.005)
 
         # Scaling
         self.declare_parameter("velocity_scaling", 0.5)
         self.declare_parameter("acceleration_scaling", 0.1)
-        self.declare_parameter("ompl_velocity_scaling", 0.5)
-        self.declare_parameter("ompl_acceleration_scaling", 0.1)
-        # self.declare_parameter("pilz_velocity_scaling", 0.6)
-        # self.declare_parameter("pilz_acceleration_scaling", 0.15)
-        self.declare_parameter("pilz_velocity_scaling", 0.3)
+        self.declare_parameter("ompl_velocity_scaling", 0.7)
+        self.declare_parameter("ompl_acceleration_scaling", 0.06)
+        
+        # For Up/Down operations
+        self.declare_parameter("pilz_velocity_scaling", 0.8)
         self.declare_parameter("pilz_acceleration_scaling", 0.05)
+        # For change-zone operations
+        # self.declare_parameter("pilz_velocity_scaling", 0.3)
+        # self.declare_parameter("pilz_acceleration_scaling", 0.05)
 
         # Controllers // TODO:refactor
         self.declare_parameter("controller_switch_service", "/controller_manager/switch_controller")
@@ -63,23 +66,32 @@ class BaseRobotNode(Node):
         # Gripper
         self.declare_parameter("servo_topic", "/servo_node/delta_twist_cmds")
         self.declare_parameter("gripper_action", "/gripper_controller/gripper_cmd")
+        
         self.declare_parameter("gripper_body_close_position", 0.010)
+        self.declare_parameter("gripper_body_open_position", 0.006)
+
         self.declare_parameter("gripper_mid_close_position", 0.011)
-        self.declare_parameter("gripper_sensor_close_position", 0.014)
+        self.declare_parameter("gripper_mid_open_position", 0.006)
+
+        self.declare_parameter("gripper_sensor_close_position", 0.015)
+        self.declare_parameter("gripper_sensor_open_position", 0.008)
+
         self.declare_parameter("gripper_wire_close_position", 0.024)
         self.declare_parameter("gripper_wire_open_position", 0.018)
-        self.declare_parameter("gripper_open_position", 0.006)
+        
         self.declare_parameter("gripper_max_effort", 0.0)
 
         # Grasp // TODO: tune these parameters and remove hardcoding
-        self.declare_parameter("z_offset_body", 0.165)
-        self.declare_parameter("z_offset_sensor_pick", 0.15)
+        self.declare_parameter("z_offset_body_pick", 0.165)
+        self.declare_parameter("z_offset_body_place", 0.173)
+        self.declare_parameter("z_offset_sensor_pick", 0.149)
         self.declare_parameter("z_offset_sensor_place", 0.18)
         self.declare_parameter("z_offset_piezo", 0.1525)
         self.declare_parameter("z_offset_mid", 0.15)
         self.declare_parameter("z_offset_wire5", 0.1495)
 
         # YOLO voting parameters.
+        self.declare_parameter("yolo_vote_debug_enabled", False)
         self.declare_parameter("yolo_vote_frames", 2)
         self.declare_parameter("yolo_vote_max_center_dist_px", 5.0)
         self.declare_parameter("min_conf", 0.70)
@@ -128,20 +140,30 @@ class BaseRobotNode(Node):
 
         self.servo_topic = str(self.get_parameter("servo_topic").value)
         self.gripper_action = str(self.get_parameter("gripper_action").value)
+
         self.gripper_body_close_position = float(self.get_parameter("gripper_body_close_position").value)
+        self.gripper_body_open_position = float(self.get_parameter("gripper_body_open_position").value)
+
         self.gripper_mid_close_position = float(self.get_parameter("gripper_mid_close_position").value)
+        self.gripper_mid_open_position = float(self.get_parameter("gripper_mid_open_position").value)
+
         self.gripper_sensor_close_position = float(self.get_parameter("gripper_sensor_close_position").value)
+        self.gripper_sensor_open_position = float(self.get_parameter("gripper_sensor_open_position").value)
+
         self.gripper_wire_close_position = float(self.get_parameter("gripper_wire_close_position").value)
         self.gripper_wire_open_position = float(self.get_parameter("gripper_wire_open_position").value)
-        self.gripper_open_position = float(self.get_parameter("gripper_open_position").value)
+
         self.gripper_max_effort = float(self.get_parameter("gripper_max_effort").value)
 
-        self.z_offset_body = float(self.get_parameter("z_offset_body").value)
+        self.z_offset_body_pick = float(self.get_parameter("z_offset_body_pick").value)
+        self.z_offset_body_place = float(self.get_parameter("z_offset_body_place").value)
         self.z_offset_sensor_pick = float(self.get_parameter("z_offset_sensor_pick").value)
         self.z_offset_sensor_place = float(self.get_parameter("z_offset_sensor_place").value)
         self.z_offset_piezo = float(self.get_parameter("z_offset_piezo").value)
         self.z_offset_mid = float(self.get_parameter("z_offset_mid").value)
         self.z_offset_wire5 = float(self.get_parameter("z_offset_wire5").value)
+        
+        self.debug_enabled = bool(self.get_parameter("yolo_vote_debug_enabled").value)
         self.yolo_vote_frames = int(self.get_parameter("yolo_vote_frames").value)
         self.yolo_vote_max_center_dist_px = float(self.get_parameter("yolo_vote_max_center_dist_px").value)
         self.min_conf = float(self.get_parameter("min_conf").value)
@@ -169,8 +191,8 @@ class BaseRobotNode(Node):
     def get_grasp_z_offset(self, action: str, class_type: str) -> Optional[float]:
         z_offsets = {
             "body": {
-                "ACTION_PICK": self.z_offset_body,
-                "ACTION_PLACE": self.z_offset_body,
+                "ACTION_PICK": self.z_offset_body_pick,
+                "ACTION_PLACE": self.z_offset_body_place,
             },
             "mid": {
                 "ACTION_PICK": self.z_offset_mid,
@@ -199,15 +221,15 @@ class BaseRobotNode(Node):
 
         gripper_positions = {
             "body": {
-                "OPEN": self.gripper_open_position,
+                "OPEN": self.gripper_body_open_position,
                 "CLOSE": self.gripper_body_close_position,
             },
             "mid": {
-                "OPEN": self.gripper_open_position,
+                "OPEN": self.gripper_mid_open_position,
                 "CLOSE": self.gripper_mid_close_position,
             },
             "sensor": {
-                "OPEN": self.gripper_open_position,
+                "OPEN": self.gripper_sensor_open_position,
                 "CLOSE": self.gripper_sensor_close_position,
             },
             "wire5": {

@@ -335,7 +335,7 @@
     <ros2_control name="ParallelGripperControl" type="system">
       <hardware>
         <plugin>feetech_ros2_driver/FeetechHardwareInterface</plugin>
-        <param name="usb_port">/dev/ttyACM0</param>
+        <param name="usb_port">/dev/ttyACM1</param>
       </hardware>
 
       <joint name="joint_finger_left">

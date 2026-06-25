@@ -356,7 +356,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--model",
         required=True,
-        help="Path to YOLO model, e.g. best.pt.",
+        help="Path to Model, e.g. best.pt.",
     )
     parser.add_argument(
         "--min-conf",
@@ -392,7 +392,7 @@ def main() -> int:
 
     model_path = Path(args.model)
     if not model_path.exists():
-        raise FileNotFoundError(f"YOLO model not found: {model_path}")
+        raise FileNotFoundError(f"Model not found: {model_path}")
 
     model = YOLO(str(model_path))
     names = model.names if isinstance(model.names, dict) else {}

@@ -25,6 +25,8 @@ from pipeline_utils import PipelineUtils
 
 CSV_HEADERS = ["name", "id", "x", "y", "z", "qx", "qy", "qz", "qw"]
 
+# TODO: add an online speed changing with `i`/`o` (increase/decrease) keybtn 
+
 class TrajectoryTeleopCommander(BaseRobotNode):
 
     def __init__(self, csv_file: str):
@@ -76,11 +78,11 @@ class TrajectoryTeleopCommander(BaseRobotNode):
 
         self.servo_pub = self.create_publisher(
             TwistStamped,
-            self.node.servo_topic,
+            self.servo_topic,
             10,
         )
         
-        self.image_sub = self.create_subscription(Image, self.image_topic, self.image_callback, 10)
+        self.image_sub = self.create_subscription(Image, self.image_topic, self.image_callback, 1)
 
         self.publish_timer = self.create_timer(
             1.0 / self.publish_rate,
@@ -88,7 +90,7 @@ class TrajectoryTeleopCommander(BaseRobotNode):
         )
 
         self.get_logger().info(f"Loaded {len(self.utils.poses)} poses from: {self.csv_file}")
-        self.get_logger().info(f"Servo topic: {self.node.servo_topic}")
+        self.get_logger().info(f"Servo topic: {self.servo_topic}")
         self.get_logger().info(f"Frame ID: {self.base_frame}")
         self.get_logger().info(f"Gripper action: {self.gripper_action}")
         self.get_logger().info(
@@ -405,7 +407,7 @@ Teleop mode:
             pose_id = str(pose.get("id", "")).strip()
             print(
                 f"  id={pose_id}  {name} -> "
-                f"x={pose['x']:.4f}, y={pose['y']:.4f}, z={pose['z']:.4f}"
+                f"x={pose['x']:.3f}, y={pose['y']:.3f}, z={pose['z']:.3f}"
             )
         print("")
 
@@ -447,7 +449,7 @@ Teleop mode:
 
         for _ in range(5):
             self.publish_servo_command()
-            time.sleep(0.02)
+            time.sleep(0.01)
 
     def set_velocity(self, x=0.0, y=0.0, z=0.0):
         with self.lock:

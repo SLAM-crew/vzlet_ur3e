@@ -20,6 +20,8 @@ class VisionProcessor:
         self.latest_bgr = None
         self.latest_image_seq = 0
         self.latest_image_header = None
+        # TODO:  preload yolo at the start of pipeline
+        _ = self.get_yolo_model()
 
     def load_yolo(self) -> Optional[type]:
         try:
@@ -232,12 +234,7 @@ class VisionProcessor:
 
         return None, last_seq, None
 
-    def _detect_yolo_candidates(
-        self,
-        bgr: np.ndarray,
-        target_class_name: str,
-        min_conf: float,
-    ):
+    def _detect_yolo_candidates(self, bgr: np.ndarray, target_class_name: str, min_conf: float):
         model = self.get_yolo_model()
         if model is None:
             return None, None
@@ -277,12 +274,7 @@ class VisionProcessor:
 
         return target_candidates, all_candidates
 
-    def _match_candidates_to_reference(
-        self,
-        reference_candidates,
-        current_candidates,
-        max_center_dist_px: float,
-    ):
+    def _match_candidates_to_reference( self, reference_candidates, current_candidates ):
         if len(reference_candidates) != len(current_candidates):
             return None
 
@@ -303,7 +295,7 @@ class VisionProcessor:
                     best_dist = dist
                     best_index = index
 
-            if best_index is None or best_dist > max_center_dist_px:
+            if best_index is None or best_dist > self.node.yolo_vote_max_center_dist_px:
                 return None
 
             matched.append(unused.pop(best_index))
@@ -465,6 +457,7 @@ class VisionProcessor:
         return run_dir
 
     def _save_vote_debug_image(self, debug_image, run_dir: Path, vote_index: int):
+        if run_dir is None: return
         image_path = run_dir / f"{vote_index}.jpg"
 
         try:
@@ -474,28 +467,22 @@ class VisionProcessor:
                 f"Could not save YOLO vote debug image {image_path}: {exc}"
             )
 
-    def get_stable_yolo_candidates(
-        self,
-        target_class_name: str,
-        ):
+    def get_stable_yolo_candidates(self, target_class_name: str):
         vote_frames = self.node.yolo_vote_frames
-        max_center_dist_px = float(
-            self.node.yolo_vote_max_center_dist_px
-        )
 
         if vote_frames < 1:
             vote_frames = 1
 
         candidate_votes = []
         last_seq = self.latest_image_seq
-        run_dir = self._create_vote_debug_run_dir()
+        run_dir = self._create_vote_debug_run_dir() if self.node.debug_enabled else None
         first_error = None
         tool_projection = None
 
         self.node.get_logger().info(
             f"Starting YOLO vote: target_class={target_class_name}, "
             f"frames={vote_frames}, min_conf={self.node.min_conf:.2f}, "
-            f"max_center_dist_px={max_center_dist_px:.1f}, "
+            f"max_center_dist_px={self.node.yolo_vote_max_center_dist_px:.1f}, "
             f"debug_dir={run_dir}"
         )
 
@@ -533,17 +520,17 @@ class VisionProcessor:
 
                 if first_error is None:
                     first_error = status_message
-
-                debug_image = self._draw_vote_debug_image(
-                    bgr=bgr,
-                    candidates=debug_candidates or [],
-                    target_class_name=target_class_name,
-                    vote_index=frame_number,
-                    vote_frames=vote_frames,
-                    tool_projection=tool_projection,
-                    status_message=status_message,
-                )
-                self._save_vote_debug_image(debug_image, run_dir, frame_number)
+                if self.node.debug_enabled:
+                    debug_image = self._draw_vote_debug_image(
+                        bgr=bgr,
+                        candidates=debug_candidates or [],
+                        target_class_name=target_class_name,
+                        vote_index=frame_number,
+                        vote_frames=vote_frames,
+                        tool_projection=tool_projection,
+                        status_message=status_message,
+                    )
+                    self._save_vote_debug_image(debug_image, run_dir, frame_number)
                 continue
 
             if not candidates:
@@ -578,16 +565,17 @@ class VisionProcessor:
                 if first_error is None:
                     first_error = error_message
 
-                debug_image = self._draw_vote_debug_image(
-                    bgr=bgr,
-                    candidates=debug_candidates or [],
-                    target_class_name=target_class_name,
-                    vote_index=frame_number,
-                    vote_frames=vote_frames,
-                    tool_projection=tool_projection,
-                    status_message=status_message,
-                )
-                self._save_vote_debug_image(debug_image, run_dir, frame_number)
+                if self.node.debug_enabled:
+                    debug_image = self._draw_vote_debug_image(
+                        bgr=bgr,
+                        candidates=debug_candidates or [],
+                        target_class_name=target_class_name,
+                        vote_index=frame_number,
+                        vote_frames=vote_frames,
+                        tool_projection=tool_projection,
+                        status_message=status_message,
+                    )
+                    self._save_vote_debug_image(debug_image, run_dir, frame_number)
                 continue
 
             for candidate in candidates:
@@ -605,11 +593,7 @@ class VisionProcessor:
                 candidate_votes.append(candidates)
                 status_message = "OK reference frame"
             else:
-                matched = self._match_candidates_to_reference(
-                    reference_candidates=candidate_votes[0],
-                    current_candidates=candidates,
-                    max_center_dist_px=max_center_dist_px,
-                )
+                matched = self._match_candidates_to_reference(reference_candidates=candidate_votes[0],current_candidates=candidates)
 
                 if matched is None:
                     status_message = (
@@ -620,7 +604,7 @@ class VisionProcessor:
                     error_message = (
                         f"YOLO vote failed: frame {frame_number}/{vote_frames} does not "
                         f"match reference frame. Expected count={len(candidate_votes[0])}, "
-                        f"got count={len(candidates)}, max_center_dist_px={max_center_dist_px:.1f}. "
+                        f"got count={len(candidates)}, max_center_dist_px={self.node.yolo_vote_max_center_dist_px:.1f}. "
                         f"reference={[(round(c['center_u'], 1), round(c['center_v'], 1), round(c['conf'], 3)) for c in candidate_votes[0]]}, "
                         f"current={[(round(c['center_u'], 1), round(c['center_v'], 1), round(c['conf'], 3)) for c in candidates]}"
                     )
@@ -633,23 +617,24 @@ class VisionProcessor:
                     candidate_votes.append(matched)
                     status_message = "OK matched frame"
 
-            debug_image = self._draw_vote_debug_image(
-                bgr=bgr,
-                candidates=debug_candidates or candidates,
-                target_class_name=target_class_name,
-                vote_index=frame_number,
-                vote_frames=vote_frames,
-                tool_projection=tool_projection,
-                status_message=status_message,
-            )
+            if self.node.debug_enabled:
+                debug_image = self._draw_vote_debug_image(
+                    bgr=bgr,
+                    candidates=debug_candidates or candidates,
+                    target_class_name=target_class_name,
+                    vote_index=frame_number,
+                    vote_frames=vote_frames,
+                    tool_projection=tool_projection,
+                    status_message=status_message,
+                )
 
-            self._save_vote_debug_image(debug_image, run_dir, frame_number)
+                self._save_vote_debug_image(debug_image, run_dir, frame_number)
 
-            self.node.get_logger().info(
-                f"YOLO vote frame {frame_number}/{vote_frames}: "
-                f"target_candidates={len(candidates)}, "
-                f"all_detections={[(c.get('class_name', '?'), round(c['center_u'], 1), round(c['center_v'], 1), round(c['conf'], 3)) for c in (debug_candidates or [])]}"
-            )
+                self.node.get_logger().info(
+                    f"YOLO vote frame {frame_number}/{vote_frames}: "
+                    f"target_candidates={len(candidates)}, "
+                    f"all_detections={[(c.get('class_name', '?'), round(c['center_u'], 1), round(c['center_v'], 1), round(c['conf'], 3)) for c in (debug_candidates or [])]}"
+                )
 
         if first_error is not None:
             self.node.get_logger().error(
@@ -821,15 +806,15 @@ class VisionProcessor:
             return None
 
         if not Path(self.node.model_path).exists():
-            self.node.get_logger().error(f"YOLO model file not found: {self.node.model_path}")
+            self.node.get_logger().error(f"Model file not found: {self.node.model_path}")
             return None
 
         try:
             self._yolo_model = yolo_class(str(self.node.model_path))
-            self.node.get_logger().info(f"Loaded YOLO circle detector from {self.node.model_path}")
+            self.node.get_logger().info(f"Loaded from {self.node.model_path}")
             return self._yolo_model
         except Exception as exc:
-            self.node.get_logger().error(f"Could not load YOLO model {self.node.model_path}: {exc}")
+            self.node.get_logger().error(f"Could not load model {self.node.model_path}: {exc}")
             return None
     
     def base_point_to_pixel_manual(self, x_base: float, y_base: float, z_base: float):

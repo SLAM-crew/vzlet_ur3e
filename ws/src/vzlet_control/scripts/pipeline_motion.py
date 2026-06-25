@@ -29,6 +29,8 @@ from shape_msgs.msg import SolidPrimitive
 class MotionController:
     def __init__(self, node):
         self.node = node
+
+        self.last_gripper_position = None
         self.last_log_time = self.node.get_clock().now()
 
         self.pneumatic_gripper_pub = self.node.create_publisher(
@@ -134,8 +136,10 @@ class MotionController:
 
         goal.request = request
         goal.planning_options.plan_only = False
-        goal.planning_options.replan = True
-        goal.planning_options.replan_attempts = 2
+        # goal.planning_options.replan = True
+        # goal.planning_options.replan_attempts = 2
+        goal.planning_options.replan = False
+        goal.planning_options.replan_attempts = 0
         goal.planning_options.planning_scene_diff.is_diff = True
         goal.planning_options.planning_scene_diff.robot_state.is_diff = True
         return goal
@@ -237,6 +241,10 @@ class MotionController:
         return False
 
     def command_gripper(self, position: float, class_type: str, label: Optional[str] = None) -> bool:
+        if self.last_gripper_position is not None:
+            if abs(position - self.last_gripper_position) < 1e-5:
+                self.node.get_logger().info(f"Gripper {label}: already at requested position")
+                return True
         if label is None:
             close_pos = self.node.get_gripper_position("CLOSE", class_type)
             open_pos = self.node.get_gripper_position("OPEN", class_type)
@@ -278,27 +286,20 @@ class MotionController:
         result = result_future.result()
         if result is not None and result.status == GoalStatus.STATUS_SUCCEEDED:
             self.node.get_logger().info(f"Gripper {label}: succeeded")
+            self.last_gripper_position = position
             return True
 
         status = None if result is None else result.status
-        self.node.get_logger().error(f"Gripper {label}: failed with status {status}")
-        return True
+        # self.node.get_logger().error(f"Gripper {label}: failed with status {status}")
+        self.last_gripper_position = None
+        return False
     
     def command_pneumatic_gripper(self, command, label: Optional[str] = None) -> bool:
         """
-        Command pneumatic suction gripper through ros2_control GPIO controller.
-
-        Accepted command values:
-            1, "1", True, "ON"   -> send 1.0
-            0, "0", False, "OFF" -> send 0.0
-
-        Published equivalent:
-
-            ros2 topic pub --once /gpio_controller/commands \
-              control_msgs/msg/DynamicInterfaceGroupValues \
-              "{interface_groups: [suction_gripper], interface_values: [{interface_names: [state], values: [1.0]}]}"
+        ros2 topic pub --once /gpio_controller/commands \
+        control_msgs/msg/DynamicInterfaceGroupValues \
+        "{interface_groups: [suction_gripper], interface_values: [{interface_names: [state], values: [1.0]}]}"
         """
-
         try:
             logic_value = self.normalize_pneumatic_command(command)
         except ValueError as exc:
@@ -403,6 +404,10 @@ class MotionController:
 
         lowered_pose = copy.deepcopy(start_pose)
         lowered_pose.pose.position.z = z_offset
+
+        # TODO: select this instead start_pose below to make this for probably extra speed up of executing
+        # upper_pose = copy.deepcopy(start_pose)
+        # upper_pose.pose.position.z = 0.15
 
         if action == "ACTION_PICK":
             if not self.command_gripper(pre_grasp_pos, class_type):
@@ -537,7 +542,7 @@ class MotionController:
         target_pose.pose.orientation = self.make_tool0_z_face_ground_orientation(current_pose.pose.orientation)
         return self.execute_move(target_pose, "Align tool0 to ground")
 
-    def move_to_zone(self, pose_name: str, constraint: Optional[str] = None, pipeline_id: Optional[str] = None, planner_id: Optional[str] = None,) -> bool:
+    def move_to_zone(self, pose_name: str, constraint: Optional[str] = "z_ground", pipeline_id: Optional[str] = None, planner_id: Optional[str] = None,) -> bool:
         
         pose_name = str(pose_name).strip()
         selected_pose = self.node.utils.get_pose_by_name(pose_name)
@@ -587,6 +592,4 @@ class MotionController:
                 planner_id=planner_id,
         ):
             return False
-
-        time.sleep(1.5)
         return True

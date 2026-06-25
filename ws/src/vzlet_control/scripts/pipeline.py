@@ -29,7 +29,7 @@ class IntegratedPickPipeline(BaseRobotNode):
         self.motion = MotionController(self)
         self.vision = VisionProcessor(self)
 
-        self.image_sub = self.create_subscription(Image, self.image_topic, self.vision.image_callback, 10)
+        self.image_sub = self.create_subscription(Image, self.image_topic, self.vision.image_callback, 1)
 
     def move_to_voted_grid_pose(self, class_type: str) -> bool:
         pose_name = self.vision.select_yolo_grid_pose(target_class_name=class_type)
@@ -37,7 +37,7 @@ class IntegratedPickPipeline(BaseRobotNode):
         if pose_name is None:
             return False
 
-        return self.motion.move_to_zone(pose_name, constraint="z_ground")
+        return self.motion.move_to_zone(pose_name)
 
     def run_pipeline(self) -> bool:
         self.get_logger().info("Waiting for MoveGroup action server...")
@@ -62,27 +62,47 @@ class IntegratedPickPipeline(BaseRobotNode):
             self.get_logger().error(f"Could not load zone poses: {exc}")
             return False
 
+
+        # TODO: we record quaternion angle but dont use it: So in the current main pipeline, CSV x/y/z is used, but the CSV quaternion is not used for these moves.
+        # TODO: Outdated ("tool alignment", lambda: self.motion.align_tool_to_ground()),
+        # TODO: keep for wrist_3_joint always -30 deg ???
+        # Z-Constraint are default argument for all the moves
         stages = [
-            # ("pick zone: body", lambda: self.motion.move_to_zone("BODY_PICK_ZONE", constraint="z_ground")),
-            # ("tool alignment", lambda: self.motion.align_tool_to_ground()),
-            # ("voted grid pose: body", lambda: self.move_to_voted_grid_pose("body")),
-            # ("pick: body", lambda: self.motion.execute_grasp_sequence("ACTION_PICK", "body")),
-            # ("body cell zone", lambda: self.motion.move_to_zone("BODY_CELL_ZONE")),
-            # ("place: body", lambda: self.motion.execute_grasp_sequence("ACTION_PLACE", "body")),
-            # ("sensor pick zone", lambda: self.motion.move_to_zone("SENSOR_PICK_ZONE", constraint="z_ground")),
-            # ("voted grid pose: piezo", lambda: self.move_to_voted_grid_pose("piezo")),
+            #  Main pipe
+            ("pick zone: body", lambda: self.motion.move_to_zone("BODY_PICK_ZONE")),
+            ("voted grid pose: body", lambda: self.move_to_voted_grid_pose("body")),
+            ("pick: body", lambda: self.motion.execute_grasp_sequence("ACTION_PICK", "body")),
+            ("body cell zone", lambda: self.motion.move_to_zone("BODY_CELL_ZONE")),
+            ("place: body", lambda: self.motion.execute_grasp_sequence("ACTION_PLACE", "body")),
+            ("sensor pick zone", lambda: self.motion.move_to_zone("SENSOR_PICK_ZONE")),
+            ("voted grid pose: sensor", lambda: self.move_to_voted_grid_pose("sensor")),
+            ("pick: sensor", lambda: self.motion.execute_grasp_sequence("ACTION_PICK", "sensor")),
+            ("body cell zone", lambda: self.motion.move_to_zone("BODY_CELL_ZONE")),
+            ("place: sensor", lambda: self.motion.execute_grasp_sequence("ACTION_PLACE", "sensor")),
+            
+            # Test jittering manually
+            # ("pick zone: body", lambda: self.motion.move_to_zone("BODY_PICK_ZONE", pipeline_id=self.pilz_pipeline_id, planner_id="PTP")),
+            # ("sensor pick zone", lambda: self.motion.move_to_zone("SENSOR_PICK_ZONE", pipeline_id=self.pilz_pipeline_id, planner_id="PTP")),
+            # ("body cell zone", lambda: self.motion.move_to_zone("BODY_CELL_ZONE", pipeline_id=self.pilz_pipeline_id, planner_id="PTP")),
+            # ("pick zone: body", lambda: self.motion.move_to_zone("BODY_PICK_ZONE", pipeline_id=self.pilz_pipeline_id, planner_id="PTP")),
+            # ("wire pick zone", lambda: self.motion.move_to_zone("WIRE5_PICK_ZONE", pipeline_id=self.pilz_pipeline_id, planner_id="PTP")),
+            # ("sensor pick zone", lambda: self.motion.move_to_zone("SENSOR_PICK_ZONE", pipeline_id=self.pilz_pipeline_id, planner_id="PTP")),
+            # ("body cell zone", lambda: self.motion.move_to_zone("BODY_CELL_ZONE", pipeline_id=self.pilz_pipeline_id, planner_id="PTP")),
+            # ("pick zone: body", lambda: self.motion.move_to_zone("BODY_PICK_ZONE", pipeline_id=self.pilz_pipeline_id, planner_id="PTP")),
+            # ("mid pick zone", lambda: self.motion.move_to_zone("MID_PICK_ZONE", pipeline_id=self.pilz_pipeline_id, planner_id="PTP")),
+            
+            # Piezo pick and place
+            # ("piezo pick zone", lambda: self.motion.move_to_zone("SENSOR_PICK_ZONE")),
             # ("pick: piezo", lambda: self.motion.execute_pneumatic_grasp_sequence("ACTION_PICK")),
             # ("place: piezo", lambda: self.motion.execute_pneumatic_grasp_sequence("ACTION_PLACE")),
-            ("wire pick zone", lambda: self.motion.move_to_zone("WIRE5_PICK_ZONE", constraint="z_ground")),
-            ("voted grid pose: wire", lambda: self.move_to_voted_grid_pose("wire5")),
-            ("pick: wire", lambda: self.motion.execute_grasp_sequence("ACTION_PICK", "wire5")),
-            ("place: wire", lambda: self.motion.execute_grasp_sequence("ACTION_PLACE", "wire5")),
-            ("wire pick zone", lambda: self.motion.move_to_zone("WIRE5_PICK_ZONE", constraint="z_ground")),
-            # ("tool alignment", lambda: self.motion.align_tool_to_ground()),
-            # ("voted grid pose: sensor", lambda: self.move_to_voted_grid_pose("sensor")),
-            # ("pick: sensor", lambda: self.motion.execute_grasp_sequence("ACTION_PICK", "sensor")),
-            # ("body cell zone", lambda: self.motion.move_to_zone("BODY_CELL_ZONE", constraint="z_ground")),
-            # ("place: sensor", lambda: self.motion.execute_grasp_sequence("ACTION_PLACE", "sensor")),
+            
+
+            # Wire pick and place
+            # ("wire pick zone", lambda: self.motion.move_to_zone("WIRE5_PICK_ZONE")),
+            # ("voted grid pose: wire", lambda: self.move_to_voted_grid_pose("wire5")),
+            # ("pick: wire", lambda: self.motion.execute_grasp_sequence("ACTION_PICK", "wire5")),
+            # ("place: wire", lambda: self.motion.execute_grasp_sequence("ACTION_PLACE", "wire5")),
+            # ("wire pick zone", lambda: self.motion.move_to_zone("WIRE5_PICK_ZONE")),
         ]
 
         for name, fn in stages:
@@ -94,8 +114,6 @@ class IntegratedPickPipeline(BaseRobotNode):
                 return False
 
             self.get_logger().info(f"✅  Finished stage: {name} ")
-            time.sleep(0.5)
-
         self.get_logger().info("🎉 Pipeline complete")
         return True
     
@@ -123,7 +141,7 @@ class IntegratedPickPipeline(BaseRobotNode):
 
         self.scene_pub.publish(scene)
         self.get_logger().info("Ground plane added")
-        time.sleep(1.0)
+        time.sleep(0.5)
 
 def main():
     rclpy.init()
