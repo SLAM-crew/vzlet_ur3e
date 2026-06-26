@@ -46,7 +46,7 @@ main_pipe:
     cx: 304.549032
     cy: 269.791445
 
-    model_path: /home/sonieth2/vzlet_ur3e/ws/models/vzlet_ver8.pt
+    model_path: /home/sonieth2/vzlet_ur3e/ws/models/vzlet_ver2.pt
 
     z_offset_body: 0.165
     z_offset_sensor_pick: 0.15

@@ -51,3 +51,11 @@ ros2 control set_controller_state gripper_controller active
 ```
 
 ros2 control switch_controllers --activate gripper_controller
+
+
+<!-- 1st row 78 -->
+<!-- 2nd row 80 -->
+<!-- create a grid, but the grasping need a different logic? same as wires bbox -->
+
+
+https://www.youtube.com/watch?v=mfu15tPwqLY

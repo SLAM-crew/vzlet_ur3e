@@ -63,10 +63,8 @@ class IntegratedPickPipeline(BaseRobotNode):
             return False
 
 
+        # 
         # TODO: we record quaternion angle but dont use it: So in the current main pipeline, CSV x/y/z is used, but the CSV quaternion is not used for these moves.
-        # TODO: Outdated ("tool alignment", lambda: self.motion.align_tool_to_ground()),
-        # TODO: keep for wrist_3_joint always -30 deg ???
-        # Z-Constraint are default argument for all the moves
         stages = [
             #  Main pipe
             ("pick zone: body", lambda: self.motion.move_to_zone("BODY_PICK_ZONE")),
@@ -79,7 +77,11 @@ class IntegratedPickPipeline(BaseRobotNode):
             ("pick: sensor", lambda: self.motion.execute_grasp_sequence("ACTION_PICK", "sensor")),
             ("body cell zone", lambda: self.motion.move_to_zone("BODY_CELL_ZONE")),
             ("place: sensor", lambda: self.motion.execute_grasp_sequence("ACTION_PLACE", "sensor")),
-            
+
+            #  Test screw
+            # ("body cell zone", lambda: self.motion.move_to_zone("BODY_CELL_ZONE")),
+            # ("screw: sensor", lambda: self.motion.execute_screw_sequence(class_type="body", count=self.screw_count, degree=self.screw_degree)),
+
             # Test jittering manually
             # ("pick zone: body", lambda: self.motion.move_to_zone("BODY_PICK_ZONE", pipeline_id=self.pilz_pipeline_id, planner_id="PTP")),
             # ("sensor pick zone", lambda: self.motion.move_to_zone("SENSOR_PICK_ZONE", pipeline_id=self.pilz_pipeline_id, planner_id="PTP")),
@@ -103,6 +105,13 @@ class IntegratedPickPipeline(BaseRobotNode):
             # ("pick: wire", lambda: self.motion.execute_grasp_sequence("ACTION_PICK", "wire5")),
             # ("place: wire", lambda: self.motion.execute_grasp_sequence("ACTION_PLACE", "wire5")),
             # ("wire pick zone", lambda: self.motion.move_to_zone("WIRE5_PICK_ZONE")),
+
+            # Resistor pick and place
+            # ("resistor pick zone", lambda: self.motion.move_to_zone("RESIST_PICK_ZONE")),
+            # ("voted grid pose: resistor", lambda: self.move_to_voted_grid_pose("resist")),
+            # ("pick: resistor", lambda: self.motion.execute_grasp_sequence("ACTION_PICK", "resist")),
+            # ("place: resistor", lambda: self.motion.execute_grasp_sequence("ACTION_PLACE", "resist")),
+            # ("resistor pick zone", lambda: self.motion.move_to_zone("RESIST_PICK_ZONE")),
         ]
 
         for name, fn in stages:

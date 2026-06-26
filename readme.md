@@ -32,7 +32,7 @@ TODO: add third to custom launch file
 ID's system for `zone_poses_floor.csv`
 200 --> `2` id of the storage ; `00` id of the grid cell place
 
-
+sudo apt-get install ros-jazzy-trac-ik-kinematics-plugin
 
 Send pose command for joints
 ```

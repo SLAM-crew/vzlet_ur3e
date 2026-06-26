@@ -433,6 +433,9 @@ Teleop mode:
             self.restore_keyboard_hotkeys(old_settings)
 
     def publish_servo_command(self):
+        if not self.in_teleop:
+            return
+
         with self.lock:
             msg = TwistStamped()
             msg.header.stamp = self.get_clock().now().to_msg()

@@ -5,20 +5,22 @@ from pathlib import Path
 import matplotlib.pyplot as plt
 
 # Type of grid: 2d / 1d
+# Resist storage = 1d grid doubled
+
 GRID_TYPE = 1
 
 INPUT_CSV = "/home/sonieth2/vzlet_ur3e/ws/zone_poses_floor.csv"
 OUTPUT_CSV = "grid_poses.csv"
-INPUT_POSE_NAME = "wire5_storage_00"
+INPUT_POSE_NAME = "resist_storage_10"
 # "sensor_storage" / "body_storage", example -->  "body_storage_00" / "body_storage_12"
-PREFIX_NAME = "wire5_storage"
-STORAGE_ID = 5
+PREFIX_NAME = "resist_storage"
+STORAGE_ID = 6
 
-GRID_X = 5
+GRID_X = 8
 GRID_Y = 0
 
 # Offset between neighboring cell centers, in meters.
-OFFSET_X = 0.019
+OFFSET_X = 0.016
 OFFSET_Y = 0.0      # if in case of 1d --> it wont use this axis
 # mid-cell-storage
 # OFFSET_X = 0.036

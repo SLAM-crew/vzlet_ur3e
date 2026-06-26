@@ -1,3 +1,4 @@
+import copy
 import time
 import rclpy
 from controller_manager_msgs.srv import SwitchController, ListControllers
@@ -5,7 +6,8 @@ from moveit_msgs.srv import ServoCommandType
 import csv
 from pathlib import Path
 from typing import Optional
-from geometry_msgs.msg import PoseStamped
+from geometry_msgs.msg import PoseStamped, Quaternion
+from scipy.spatial.transform import Rotation
 
 CSV_HEADERS = ["name", "id", "x", "y", "z", "qx", "qy", "qz", "qw"]
 
@@ -497,3 +499,26 @@ class PipelineUtils:
             f"active={activate_controllers}, inactive={deactivate_controllers}"
         )
         return True
+    
+    def rotate_pose_about_tool_z(self, pose: PoseStamped, degree: float) -> PoseStamped:
+        rotated_pose = copy.deepcopy(pose)
+
+        current_rotation = Rotation.from_quat([
+            pose.pose.orientation.x,
+            pose.pose.orientation.y,
+            pose.pose.orientation.z,
+            pose.pose.orientation.w,
+        ])
+
+        delta_rotation = Rotation.from_euler("z", degree, degrees=True)
+
+        new_rotation = current_rotation * delta_rotation
+
+        qx, qy, qz, qw = new_rotation.as_quat()
+
+        rotated_pose.pose.orientation.x = float(qx)
+        rotated_pose.pose.orientation.y = float(qy)
+        rotated_pose.pose.orientation.z = float(qz)
+        rotated_pose.pose.orientation.w = float(qw)
+
+        return rotated_pose

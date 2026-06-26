@@ -27,33 +27,19 @@ class BaseRobotNode(Node):
         self.declare_parameter("camera_frame", "camera_color_optical_frame")
         self.declare_parameter("group_name", "ur_manipulator")
 
-        # CSV / camera
         self.declare_parameter("zone_pose_csv", "/home/sonieth2/vzlet_ur3e/ws/zone_poses_floor.csv")
         self.declare_parameter("image_topic", "/camera/camera/color/image_raw")
 
-        # MoveIt Planning & Pipelines
+        # MoveIt Planning
         self.declare_parameter("move_action", "/move_action")
-        self.declare_parameter("pipeline_id", "ompl")
-        self.declare_parameter("planner_id", "RRTConnect")
-        self.declare_parameter("pilz_pipeline_id", "pilz_industrial_motion_planner")
-        self.declare_parameter("pilz_planner_id", "LIN")
         self.declare_parameter("planning_attempts", 5)
         self.declare_parameter("allowed_planning_time", 0.5)
         self.declare_parameter("position_tolerance", 0.001)
         self.declare_parameter("orientation_tolerance", 0.005)
 
-        # Scaling
-        self.declare_parameter("velocity_scaling", 0.5)
-        self.declare_parameter("acceleration_scaling", 0.1)
-        self.declare_parameter("ompl_velocity_scaling", 0.7)
-        self.declare_parameter("ompl_acceleration_scaling", 0.06)
-        
-        # For Up/Down operations
-        self.declare_parameter("pilz_velocity_scaling", 0.8)
-        self.declare_parameter("pilz_acceleration_scaling", 0.05)
-        # For change-zone operations
-        # self.declare_parameter("pilz_velocity_scaling", 0.3)
-        # self.declare_parameter("pilz_acceleration_scaling", 0.05)
+        self.declare_parameter("zone_motion_profile", ["pilz_industrial_motion_planner", "PTP", "0.35", "0.05"])
+        self.declare_parameter("grasp_motion_profile", ["pilz_industrial_motion_planner", "LIN", "0.25", "0.04"])
+        self.declare_parameter("screw_motion_profile", ["ompl", "RRTConnect", "0.10", "0.03"])
 
         # Controllers // TODO:refactor
         self.declare_parameter("controller_switch_service", "/controller_manager/switch_controller")
@@ -81,6 +67,10 @@ class BaseRobotNode(Node):
         
         self.declare_parameter("gripper_max_effort", 0.0)
 
+        self.declare_parameter("screw_count", 3)
+        self.declare_parameter("screw_degree", 60.0)
+        self.declare_parameter("screw_start_wrist3_deg", -60.0)
+
         # Grasp // TODO: tune these parameters and remove hardcoding
         self.declare_parameter("z_offset_body_pick", 0.165)
         self.declare_parameter("z_offset_body_place", 0.173)
@@ -89,10 +79,11 @@ class BaseRobotNode(Node):
         self.declare_parameter("z_offset_piezo", 0.1525)
         self.declare_parameter("z_offset_mid", 0.15)
         self.declare_parameter("z_offset_wire5", 0.1495)
+        self.declare_parameter("z_offset_resist", 0.147)
 
         # YOLO voting parameters.
-        self.declare_parameter("yolo_vote_debug_enabled", False)
-        self.declare_parameter("yolo_vote_frames", 2)
+        self.declare_parameter("yolo_vote_debug_enabled", True)
+        self.declare_parameter("yolo_vote_frames", 1)
         self.declare_parameter("yolo_vote_max_center_dist_px", 5.0)
         self.declare_parameter("min_conf", 0.70)
         self.declare_parameter("yolo_vote_frame_timeout_s", 3.0)
@@ -103,7 +94,7 @@ class BaseRobotNode(Node):
         self.declare_parameter("fy", 600.606750)
         self.declare_parameter("cx", 304.549032)
         self.declare_parameter("cy", 269.791445)
-        self.declare_parameter("model_path", "/home/sonieth2/vzlet_ur3e/ws/models/vzlet_ver10.pt")
+        self.declare_parameter("model_path", "/home/sonieth2/vzlet_ur3e/ws/models/vzlet_ver2.pt")
 
     def _extract_robot_parameters(self):
         self.base_frame = str(self.get_parameter("base_frame").value)
@@ -115,21 +106,14 @@ class BaseRobotNode(Node):
         self.image_topic = str(self.get_parameter("image_topic").value)
 
         self.move_action = str(self.get_parameter("move_action").value)
-        self.pipeline_id = str(self.get_parameter("pipeline_id").value)
-        self.planner_id = str(self.get_parameter("planner_id").value)
-        self.pilz_pipeline_id = str(self.get_parameter("pilz_pipeline_id").value)
-        self.pilz_planner_id = str(self.get_parameter("pilz_planner_id").value)
         self.planning_attempts = int(self.get_parameter("planning_attempts").value)
         self.allowed_planning_time = float(self.get_parameter("allowed_planning_time").value)
         self.position_tolerance = float(self.get_parameter("position_tolerance").value)
         self.orientation_tolerance = float(self.get_parameter("orientation_tolerance").value)
 
-        self.velocity_scaling = float(self.get_parameter("velocity_scaling").value)
-        self.acceleration_scaling = float(self.get_parameter("acceleration_scaling").value)
-        self.ompl_velocity_scaling = float(self.get_parameter("ompl_velocity_scaling").value)
-        self.ompl_acceleration_scaling = float(self.get_parameter("ompl_acceleration_scaling").value)
-        self.pilz_velocity_scaling = float(self.get_parameter("pilz_velocity_scaling").value)
-        self.pilz_acceleration_scaling = float(self.get_parameter("pilz_acceleration_scaling").value)
+        self.zone_motion_profile = list(self.get_parameter("zone_motion_profile").value)
+        self.grasp_motion_profile = list(self.get_parameter("grasp_motion_profile").value)
+        self.screw_motion_profile = list(self.get_parameter("screw_motion_profile").value)
 
         self.controller_switch_service = str(self.get_parameter("controller_switch_service").value)
         self.trajectory_controller = str(self.get_parameter("trajectory_controller").value)
@@ -155,6 +139,10 @@ class BaseRobotNode(Node):
 
         self.gripper_max_effort = float(self.get_parameter("gripper_max_effort").value)
 
+        self.screw_count = int(self.get_parameter("screw_count").value)
+        self.screw_degree = float(self.get_parameter("screw_degree").value)
+        self.screw_start_wrist3_deg = float(self.get_parameter("screw_start_wrist3_deg").value)
+
         self.z_offset_body_pick = float(self.get_parameter("z_offset_body_pick").value)
         self.z_offset_body_place = float(self.get_parameter("z_offset_body_place").value)
         self.z_offset_sensor_pick = float(self.get_parameter("z_offset_sensor_pick").value)
@@ -162,6 +150,7 @@ class BaseRobotNode(Node):
         self.z_offset_piezo = float(self.get_parameter("z_offset_piezo").value)
         self.z_offset_mid = float(self.get_parameter("z_offset_mid").value)
         self.z_offset_wire5 = float(self.get_parameter("z_offset_wire5").value)
+        self.z_offset_resist = float(self.get_parameter("z_offset_resist").value)
         
         self.debug_enabled = bool(self.get_parameter("yolo_vote_debug_enabled").value)
         self.yolo_vote_frames = int(self.get_parameter("yolo_vote_frames").value)
@@ -206,6 +195,14 @@ class BaseRobotNode(Node):
                 "ACTION_PICK": self.z_offset_wire5,
                 "ACTION_PLACE": self.z_offset_wire5,
             },
+            "resist": {
+                "ACTION_PICK": self.z_offset_resist,
+                "ACTION_PLACE": self.z_offset_resist,
+            },
+            "piezo": {
+                "ACTION_PICK": self.z_offset_piezo,
+                "ACTION_PLACE": self.z_offset_piezo,
+            },
         }
 
         try:
@@ -236,6 +233,10 @@ class BaseRobotNode(Node):
                 "OPEN": self.gripper_wire_open_position,
                 "CLOSE": self.gripper_wire_close_position,
             },
+            "resist": {
+                "OPEN": self.gripper_wire_open_position,
+                "CLOSE": self.gripper_wire_close_position,
+            },
         }
 
         try:
@@ -246,5 +247,17 @@ class BaseRobotNode(Node):
             )
             return None
     
+    def get_motion_profile(self, profile_name: str) -> dict:
+        param_name = f"{str(profile_name).strip()}_motion_profile"
+        values = list(self.get_parameter(param_name).value)
+
+        return {
+            "name": profile_name,
+            "pipeline_id": str(values[0]),
+            "planner_id": str(values[1]),
+            "velocity_scaling": float(values[2]),
+            "acceleration_scaling": float(values[3]),
+        }
+
     def now_s(self) -> float:
         return self.get_clock().now().nanoseconds * 1e-9

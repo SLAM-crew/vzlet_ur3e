@@ -46,16 +46,19 @@ class VisionProcessor:
         area = w * h
         return center_u, center_v, radius_px, area
 
-    def _box_grasp_point(self, box, class_name: str):
+    def _box_grasp_point(self, box, grasp_mode: str):
         x1, y1, x2, y2 = self._box_to_xyxy(box)
 
         center_u = 0.5 * (x1 + x2)
-
-        if class_name == "wire5":
-            center_y = 0.5 * (y1 + y2)
+        center_y = 0.5 * (y1 + y2)
+        # bottom -> center of lower half
+        if grasp_mode == "bottom":
             center_v = 0.5 * (center_y + y2)
+        # upper  -> center of upper half
+        elif grasp_mode == "upper":
+            center_v = 0.5 * (y1 + center_y)
         else:
-            center_v = 0.5 * (y1 + y2)
+            center_v = center_y
 
         return center_u, center_v
 
@@ -111,12 +114,7 @@ class VisionProcessor:
             self.node.get_logger().warn(f"Could not project tool0 onto image: {exc}")
             return None
     
-    def find_closest_zone_pose_to_base_xy(
-        self,
-        target_x_base: float,
-        target_y_base: float,
-        target_class_name: str,
-    ):
+    def find_closest_zone_pose_to_base_xy(self, target_x_base: float, target_y_base: float, target_class_name: str, pose_prefix: Optional[str] = None):
         poses = self.node.utils.poses
 
         if not poses:
@@ -130,7 +128,8 @@ class VisionProcessor:
         for pose_name, pose in poses.items():
             if pose_name.startswith("zone"):
                 continue
-
+            if pose_prefix is not None and not pose_name.startswith(pose_prefix):
+                continue
             if target_class_name is not None and target_class_name not in pose_name:
                 continue
 
@@ -260,7 +259,7 @@ class VisionProcessor:
         for box in boxes:
             cls_id = self._box_cls_id(box)
             class_name = str(names.get(cls_id, cls_id))
-            all_candidates.append(self._make_debug_candidate(box, class_name))
+            all_candidates.extend(self._make_candidates_for_box(box, class_name))
 
         target_class_id = self._get_target_class_id(result, target_class_name)
         if target_class_id is None:
@@ -378,10 +377,19 @@ class VisionProcessor:
                 int(round(candidate["center_v"])),
             )
 
+            grasp_mode = candidate.get("grasp_mode", "center")
+
+            if grasp_mode == "bottom":
+                marker_color = (0, 0, 255)
+            elif grasp_mode == "upper":
+                marker_color = (255, 255, 0)
+            else:
+                marker_color = (0, 255, 255)
+
             cv2.drawMarker(
                 image,
                 center,
-                (0, 0, 255),
+                marker_color,
                 markerType=cv2.MARKER_CROSS,
                 markerSize=12,
                 thickness=2,
@@ -415,7 +423,7 @@ class VisionProcessor:
             )
 
         status = (
-            f"YOLO vote frame {vote_index}/{vote_frames}: "
+            f"Model vote frame {vote_index}/{vote_frames}: "
             f"class={target_class_name}, candidates={len(candidates)}"
         )
 
@@ -631,20 +639,20 @@ class VisionProcessor:
                 self._save_vote_debug_image(debug_image, run_dir, frame_number)
 
                 self.node.get_logger().info(
-                    f"YOLO vote frame {frame_number}/{vote_frames}: "
+                    f"Model vote frame {frame_number}/{vote_frames}: "
                     f"target_candidates={len(candidates)}, "
                     f"all_detections={[(c.get('class_name', '?'), round(c['center_u'], 1), round(c['center_v'], 1), round(c['conf'], 3)) for c in (debug_candidates or [])]}"
                 )
 
         if first_error is not None:
             self.node.get_logger().error(
-                f"YOLO vote rejected after saving debug frames to {run_dir}: {first_error}"
+                f"Model vote rejected after saving debug frames to {run_dir}: {first_error}"
             )
             return None, None
 
         if len(candidate_votes) != vote_frames:
             self.node.get_logger().error(
-                f"YOLO vote rejected: saved debug frames but accepted "
+                f"Model vote rejected: saved debug frames but accepted "
                 f"{len(candidate_votes)}/{vote_frames} vote frames"
             )
             return None, None
@@ -652,7 +660,7 @@ class VisionProcessor:
         averaged_candidates = self._average_candidate_votes(candidate_votes)
 
         self.node.get_logger().info(
-            f"YOLO vote accepted: target_class={target_class_name}, "
+            f"Model vote accepted: target_class={target_class_name}, "
             f"frames={vote_frames}, candidates={len(averaged_candidates)}, "
             f"debug_dir={run_dir}"
         )
@@ -679,10 +687,7 @@ class VisionProcessor:
             )
             return None, None
         
-        selected_candidate = self._select_nearest_to_tool(
-            candidates,
-            tool_projection,
-        )
+        selected_candidate = self._select_nearest_to_tool(candidates, tool_projection)
 
         if selected_candidate is None:
             self.node.get_logger().error("No YOLO candidate could be selected")
@@ -691,10 +696,7 @@ class VisionProcessor:
         selected_candidate["selected"] = True
         self._last_yolo_debug_boxes = candidates
 
-        target_base = self.pixel_to_base_parallel_camera(
-            selected_candidate["center_u"],
-            selected_candidate["center_v"],
-        )
+        target_base = self.pixel_to_base_parallel_camera(selected_candidate["center_u"], selected_candidate["center_v"])
 
         if target_base is None:
             self.node.get_logger().error(
@@ -706,6 +708,7 @@ class VisionProcessor:
             target_base.point.x,
             target_base.point.y,
             target_class_name,
+            pose_prefix=selected_candidate.get("pose_prefix"),
         )
 
         if pose_name is None:
@@ -755,9 +758,9 @@ class VisionProcessor:
             if self._box_cls_id(box) == target_class_id
         ]
 
-    def _make_debug_candidate(self, box, class_name: str):
+    def _make_debug_candidate(self, box, class_name: str, grasp_mode: str = "center", pose_prefix: Optional[str] = None):
         conf = self._box_conf(box)
-        center_u, center_v = self._box_grasp_point(box, class_name)
+        center_u, center_v = self._box_grasp_point(box, grasp_mode)
         _, _, radius_px, area = self._box_center_radius_area(box)
         x1, y1, x2, y2 = self._box_to_xyxy(box)
 
@@ -771,7 +774,19 @@ class VisionProcessor:
             "area": area,
             "selected": False,
             "class_name": class_name,
+            "grasp_mode": grasp_mode,
+            "pose_prefix": pose_prefix,
         }
+
+    def _make_candidates_for_box(self, box, class_name: str):
+        if class_name == "wire5": return [self._make_debug_candidate(box, class_name, grasp_mode="bottom")]
+
+        if class_name == "resist": return [
+            self._make_debug_candidate(box, class_name, grasp_mode="bottom", pose_prefix="resist_storage_0"),
+            self._make_debug_candidate(box, class_name, grasp_mode="upper", pose_prefix="resist_storage_1"),
+        ]
+
+        return [self._make_debug_candidate(box, class_name, grasp_mode="center")]
 
     def _select_highest_confidence(self, candidates):
         return max(candidates, key=lambda item: item["conf"])

@@ -1,8 +1,6 @@
 import copy
-import csv
 import math
 import time
-from pathlib import Path
 from typing import Optional
 
 import numpy as np
@@ -19,10 +17,12 @@ from moveit_msgs.action import MoveGroup
 from moveit_msgs.msg import (
     BoundingVolume,
     Constraints,
+    JointConstraint,
     MotionPlanRequest,
     OrientationConstraint,
     PositionConstraint,
 )
+from sensor_msgs.msg import JointState
 from shape_msgs.msg import SolidPrimitive
 
 
@@ -32,12 +32,24 @@ class MotionController:
 
         self.last_gripper_position = None
         self.last_log_time = self.node.get_clock().now()
+        
+        self.latest_joint_state = None
+
+        self.joint_state_sub = self.node.create_subscription(
+            JointState,
+            "/joint_states",
+            self.joint_state_callback,
+            10,
+        )
 
         self.pneumatic_gripper_pub = self.node.create_publisher(
             DynamicInterfaceGroupValues,
             "/gpio_controller/commands",
             10,
         )
+
+    def joint_state_callback(self, msg: JointState):
+        self.latest_joint_state = msg
 
     def get_current_tool0_pose(
         self,
@@ -79,27 +91,27 @@ class MotionController:
         )
         return None
 
-    def create_move_goal(
-        self,
-        target_pose: PoseStamped,
-        path_constraints: Optional[Constraints] = None,
-        pipeline_id: Optional[str] = None,
-        planner_id: Optional[str] = None,
-    ) -> MoveGroup.Goal:
+    def create_move_goal(self, target_pose: PoseStamped, path_constraints: Optional[Constraints] = None, motion_profile: str = "zone") -> MoveGroup.Goal:
+        profile = self.node.get_motion_profile(motion_profile)
+
         goal = MoveGroup.Goal()
         request = MotionPlanRequest()
-        request.group_name = self.node.get_parameter("group_name").value
-        request.pipeline_id = str(self.node.get_parameter("pipeline_id").value) if pipeline_id is None else pipeline_id
-        request.planner_id = str(self.node.get_parameter("planner_id").value) if planner_id is None else planner_id
-        request.num_planning_attempts = int(self.node.get_parameter("planning_attempts").value)
-        request.allowed_planning_time = float(self.node.get_parameter("allowed_planning_time").value)
-        
-        if request.pipeline_id == "pilz_industrial_motion_planner":
-            request.max_velocity_scaling_factor = float(self.node.get_parameter("pilz_velocity_scaling").value)
-            request.max_acceleration_scaling_factor = float(self.node.get_parameter("pilz_acceleration_scaling").value)
-        elif request.pipeline_id == "ompl":
-            request.max_velocity_scaling_factor = float(self.node.get_parameter("ompl_velocity_scaling").value)
-            request.max_acceleration_scaling_factor = float(self.node.get_parameter("ompl_acceleration_scaling").value)
+
+        request.group_name = self.node.group_name
+        request.pipeline_id = profile["pipeline_id"]
+        request.planner_id = profile["planner_id"]
+        request.num_planning_attempts = self.node.planning_attempts
+        request.allowed_planning_time = self.node.allowed_planning_time
+        request.max_velocity_scaling_factor = profile["velocity_scaling"]
+        request.max_acceleration_scaling_factor = profile["acceleration_scaling"]
+
+        self.node.get_logger().info(
+            f"Motion profile={profile['name']}, "
+            f"pipeline_id={request.pipeline_id}, "
+            f"planner_id={request.planner_id}, "
+            f"vel={request.max_velocity_scaling_factor:.3f}, "
+            f"acc={request.max_acceleration_scaling_factor:.3f}"
+        )
 
         base_frame = self.node.get_parameter("base_frame").value
         tool_frame = self.node.get_parameter("tool_frame").value
@@ -143,16 +155,8 @@ class MotionController:
         goal.planning_options.planning_scene_diff.is_diff = True
         goal.planning_options.planning_scene_diff.robot_state.is_diff = True
         return goal
-
-    def execute_pose(
-        self,
-        pose_name: str,
-        pose: dict,
-        constraint: Optional[str] = None,
-        wait_fn=None,
-        pipeline_id: Optional[str] = None,
-        planner_id: Optional[str] = None,
-    ) -> bool:
+    
+    def execute_pose(self, pose_name: str, pose: dict, constraint: Optional[str] = None, wait_fn=None, motion_profile: str = "zone") -> bool:
         target_pose = self.node.utils.pose_to_pose_stamped(pose)
 
         if constraint == "z_ground":
@@ -163,9 +167,7 @@ class MotionController:
                 )
                 return False
 
-            target_pose.pose.orientation = self.make_tool0_z_face_ground_orientation(
-                current_pose.pose.orientation
-            )
+            target_pose.pose.orientation = self.make_tool0_z_face_ground_orientation(current_pose.pose.orientation)
 
         if not self.node.movegroup_client.wait_for_server(timeout_sec=10.0):
             self.node.get_logger().error("MoveGroup action server is not available")
@@ -175,19 +177,10 @@ class MotionController:
             target_pose,
             f"pose {pose_name}",
             wait_fn=wait_fn,
-            pipeline_id=pipeline_id,
-            planner_id=planner_id
+            motion_profile=motion_profile
         )
 
-    def execute_move(
-        self,
-        target_pose: PoseStamped,
-        label: str,
-        path_constraints: Optional[Constraints] = None,
-        wait_fn=None,
-        pipeline_id: Optional[str] = None,
-        planner_id: Optional[str] = None,
-    ) -> bool:
+    def execute_move(self, target_pose: PoseStamped, label: str, path_constraints: Optional[Constraints] = None, wait_fn=None, motion_profile: str = "zone") -> bool:
         target_pose.header.stamp = self.node.get_clock().now().to_msg()
         self.node.get_logger().info(
             f"{label}: target x={target_pose.pose.position.x:.4f}, y={target_pose.pose.position.y:.4f}, "
@@ -195,18 +188,11 @@ class MotionController:
             f"qy={target_pose.pose.orientation.y:.4f}, qz={target_pose.pose.orientation.z:.4f}, "
             f"qw={target_pose.pose.orientation.w:.4f}"
         )
-        self.node.get_logger().info(
-        f"{label}: pipeline_id={pipeline_id or self.node.get_parameter('pipeline_id').value}, "
-        f"planner_id={planner_id or self.node.get_parameter('planner_id').value}"
-        )
-        goal = self.create_move_goal(target_pose, path_constraints=path_constraints, pipeline_id=pipeline_id, planner_id=planner_id)
+        self.node.get_logger().info(f"{label}: motion_profile={motion_profile}")
+        goal = self.create_move_goal(target_pose, path_constraints=path_constraints, motion_profile=motion_profile,
+)
         send_goal_future = self.node.movegroup_client.send_goal_async(goal)
         
-        # rclpy.spin_until_future_complete(self.node, send_goal_future, timeout_sec=30.0)
-        
-        # if not send_goal_future.done():
-        #     self.node.get_logger().error(f"{label}: timed out waiting goal acceptance")
-        #     return False
         if wait_fn is None:
             wait_fn = self.node.utils.wait_future
         if not wait_fn(send_goal_future, 30.0, f"{label}: wait goal acceptance"):
@@ -221,12 +207,6 @@ class MotionController:
             return False
 
         result_future = goal_handle.get_result_async()
-        
-        # rclpy.spin_until_future_complete(self.node, result_future, timeout_sec=300.0)
-        
-        # if not result_future.done():
-        #     self.node.get_logger().error(f"{label}: timed out waiting execution result")
-        #     return False
 
         if not wait_fn(result_future, 300.0, f"{label}: wait execution result"):
             return False
@@ -372,14 +352,80 @@ class MotionController:
             if normalized in ("0", "OFF", "FALSE"):
                 return 0.0
 
-            raise ValueError(
-                f"invalid string command '{command}'; expected ON/OFF or 0/1"
+            raise ValueError(f"invalid string command '{command}'; expected ON/OFF")
+
+        raise ValueError(f"unsupported command type {type(command).__name__}; expected ON/OFF")
+    
+    def execute_screw_sequence(self, class_type: str, count: int, degree: float) -> bool:
+        start_pose = self.get_current_tool0_pose()
+
+        if start_pose is None:
+            return False
+
+        z_offset = self.node.get_grasp_z_offset("ACTION_PICK", class_type)
+
+        if z_offset is None:
+            return False
+
+        open_pos = self.node.get_gripper_position("OPEN", class_type)
+        close_pos = self.node.get_gripper_position("CLOSE", class_type)
+
+        if open_pos is None or close_pos is None:
+            return False
+
+        lowered_pose = copy.deepcopy(start_pose)
+        lowered_pose.pose.position.z = z_offset
+
+        rotated_pose = self.node.utils.rotate_pose_about_tool_z(lowered_pose, degree)
+
+        self.node.get_logger().info(
+            f"Starting screw sequence: "
+            f"class_type={class_type}, "
+            f"count={count}, "
+            f"degree={degree:.1f}"
+        )
+
+        if not self.command_gripper(open_pos, class_type, "open before screw"):
+            return False
+
+        if not self.execute_move(
+            lowered_pose,
+            f"Move down for screw {class_type}",
+            pipeline_id=self.node.pilz_pipeline_id,
+            planner_id=self.node.pilz_planner_id,
+        ):
+            return False
+
+        for index in range(count):
+            step = index + 1
+
+            self.node.get_logger().info(
+                f"Screw step {step}/{count}: "
+                f"close -> rotate EEF around tool Z -> open -> reset orientation"
             )
 
-        raise ValueError(
-            f"unsupported command type {type(command).__name__}; expected 0/1 or ON/OFF"
-        )
-            
+            if not self.command_gripper(close_pos, class_type, f"screw grip {step}"):
+                return False
+
+            if not self.execute_move(rotated_pose, f"Screw rotate step {step}", motion_profile="screw"):
+                return False
+
+
+            if not self.command_gripper(open_pos, class_type, f"screw release {step}"):
+                return False
+
+            if not self.execute_move(lowered_pose, f"Reset screw orientation step {step}", motion_profile="screw"):
+                return False
+
+            if step < count:
+                if not self.execute_move(lowered_pose, f"Move down for screw step {step + 1}", motion_profile="screw"):
+                    return False
+
+        if not self.execute_move(start_pose, "Return to upper pose after screw", pipeline_id=self.node.pilz_pipeline_id, planner_id=self.node.pilz_planner_id):
+            return False
+
+        return True
+
     def execute_grasp_sequence(self, action: str, class_type: str) -> bool:
         start_pose = self.get_current_tool0_pose()
         if start_pose is None:
@@ -413,9 +459,10 @@ class MotionController:
             if not self.command_gripper(pre_grasp_pos, class_type):
                 return False
     
-        if not self.execute_move(lowered_pose, f"Move down for {action}", pipeline_id=self.node.pilz_pipeline_id, planner_id=self.node.pilz_planner_id): return False
+        if not self.execute_move(lowered_pose, f"Move down for {action}", motion_profile="grasp"): return False
         if not self.command_gripper(post_grasp_pos, class_type): return False
-        if not self.execute_move(start_pose, "Return to upper pose", pipeline_id=self.node.pilz_pipeline_id, planner_id=self.node.pilz_planner_id): return False
+        time.sleep(0.1)  # TODO: ??? wait for gripper to close, how to fix it
+        if not self.execute_move(start_pose, "Return to upper pose", motion_profile="grasp"): return False
 
         return True
 
@@ -440,13 +487,13 @@ class MotionController:
         if not self.command_pneumatic_gripper(pre_grasp_cmd):
             return False
 
-        if not self.execute_move(lowered_pose, f"Move down for {action}", pipeline_id=self.node.pilz_pipeline_id, planner_id=self.node.pilz_planner_id):
+        if not self.execute_move(lowered_pose, f"Move down for {action}", motion_profile="grasp"):
             return False
 
         if not self.command_pneumatic_gripper(post_grasp_cmd):
             return False
 
-        if not self.execute_move(start_pose, "Return to upper pose", pipeline_id=self.node.pilz_pipeline_id, planner_id=self.node.pilz_planner_id):
+        if not self.execute_move(start_pose, "Return to upper pose", motion_profile="grasp"):
             return False
 
         return True
@@ -511,19 +558,11 @@ class MotionController:
         return q
 
     def make_tool0_z_face_ground_orientation(self, current_orientation: Quaternion):
-        current_rotation = self.quaternion_to_rotation_matrix(current_orientation)
-        current_tool_x = current_rotation[:, 0]
-
         desired_tool_z = np.array([0.0, 0.0, -1.0])
-        desired_tool_x = np.array([current_tool_x[0], current_tool_x[1], 0.0])
+        desired_tool_y = np.array([0.0, -1.0, 0.0])
 
-        if np.linalg.norm(desired_tool_x) < 1e-6:
-            desired_tool_x = np.array([1.0, 0.0, 0.0])
-        else:
-            desired_tool_x = desired_tool_x / np.linalg.norm(desired_tool_x)
-
-        desired_tool_y = np.cross(desired_tool_z, desired_tool_x)
-        desired_tool_y = desired_tool_y / np.linalg.norm(desired_tool_y)
+        desired_tool_x = np.cross(desired_tool_y, desired_tool_z)
+        desired_tool_x = desired_tool_x / np.linalg.norm(desired_tool_x)
 
         desired_rotation = np.column_stack((
             desired_tool_x,
@@ -533,16 +572,16 @@ class MotionController:
 
         return self.rotation_matrix_to_quaternion(desired_rotation)
 
-    def align_tool_to_ground(self) -> bool:
-        current_pose = self.get_current_tool0_pose(timeout_s=5.0)
+    # def align_tool_to_ground(self) -> bool:
+    #     current_pose = self.get_current_tool0_pose(timeout_s=5.0)
 
-        if not current_pose: return False
+    #     if not current_pose: return False
 
-        target_pose = copy.deepcopy(current_pose)
-        target_pose.pose.orientation = self.make_tool0_z_face_ground_orientation(current_pose.pose.orientation)
-        return self.execute_move(target_pose, "Align tool0 to ground")
+    #     target_pose = copy.deepcopy(current_pose)
+    #     target_pose.pose.orientation = self.make_tool0_z_face_ground_orientation(current_pose.pose.orientation)
+    #     return self.execute_move(target_pose, "Align tool0 to ground")
 
-    def move_to_zone(self, pose_name: str, constraint: Optional[str] = "z_ground", pipeline_id: Optional[str] = None, planner_id: Optional[str] = None,) -> bool:
+    def move_to_zone(self, pose_name: str, constraint: Optional[str] = "z_ground", motion_profile: str = "zone") -> bool:
         
         pose_name = str(pose_name).strip()
         selected_pose = self.node.utils.get_pose_by_name(pose_name)
@@ -561,9 +600,7 @@ class MotionController:
                 )
                 return False
 
-            target_orientation_override = self.make_tool0_z_face_ground_orientation(
-                current_pose.pose.orientation
-            )
+            target_orientation_override = self.make_tool0_z_face_ground_orientation(current_pose.pose.orientation)
             label_prefix = "z_ground zone pose"
 
         target = PoseStamped()
@@ -588,8 +625,7 @@ class MotionController:
             target,
             label,
             path_constraints=path_constraints,
-                pipeline_id=pipeline_id,
-                planner_id=planner_id,
+            motion_profile=motion_profile
         ):
             return False
         return True
